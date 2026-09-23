@@ -24,18 +24,16 @@ interface Review {
   created_at: string;
 }
 
-// NOWE: Event na spocie
 interface EventItem {
   id: number;
   spot_id: number;
   title: string;
-  time: string;
+  time: string; // format "HH:mm"
   creator_nick: string;
   participants: string[];
   created_at: string;
 }
 
-// Dodano "radius", aby inni wiedzieli, z jakiej odległości chcesz być widoczny
 interface LiveUser {
   id: string;
   nick: string;
@@ -74,17 +72,31 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
   return R * c;
 }
 
+// Sprawdza, czy event jest ważny (czy nie minęła godzina od czasu rozpoczęcia)
+function isEventActive(event: EventItem) {
+  if (!event.time) return true;
+  const [hours, minutes] = event.time.split(':').map(Number);
+  
+  const baseDate = new Date(event.created_at || Date.now());
+  const eventDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), hours, minutes);
+  
+  // Czas wygaśnięcia = godzina startu + 1 godzina
+  const expirationTime = new Date(eventDate.getTime() + 60 * 60 * 1000);
+  
+  return new Date() <= expirationTime;
+}
+
 export default function MapaMobilePage() {
   const [spots, setSpots] = useState<Spot[]>([]);
-  const [events, setEvents] = useState<EventItem[]>([]); // NOWE
+  const [events, setEvents] = useState<EventItem[]>([]);
 
   // Stany paneli
   const [selectedAnchor, setSelectedAnchor] = useState<[number, number] | null>(null);
   const [previewSpot, setPreviewSpot] = useState<Spot | null>(null);
   const [activeSpot, setActiveSpot] = useState<Spot | null>(null);   
   const [reviewSpot, setReviewSpot] = useState<Spot | null>(null);   
-  const [creatingEventSpot, setCreatingEventSpot] = useState<Spot | null>(null); // NOWE
-  const [activeEvent, setActiveEvent] = useState<EventItem | null>(null); // NOWE
+  const [creatingEventSpot, setCreatingEventSpot] = useState<Spot | null>(null);
+  const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
   
   // Zmienne Formularzy
   const [spotName, setSpotName] = useState('');
@@ -92,20 +104,20 @@ export default function MapaMobilePage() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // NOWE: Formularz eventu
+  // Formularz eventu
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('');
   
-  // --- USTAWIENIA KONTA ---
+  // Ustawienia konta
   const [userNick, setUserNick] = useState<string>('Anonim');
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [shareLocation, setShareLocation] = useState(false);
-  const [visibilityRadius, setVisibilityRadius] = useState<number>(100); // NOWE: Zasięg widoczności
+  const [visibilityRadius, setVisibilityRadius] = useState<number>(100);
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [tempNick, setTempNick] = useState('');
   const [tempShare, setTempShare] = useState(false);
-  const [tempRadius, setTempRadius] = useState(100); // Tymczasowy promień do suwaka w ustawieniach
+  const [tempRadius, setTempRadius] = useState(100);
   const [tempAvatarFile, setTempAvatarFile] = useState<File | null>(null);
   const [tempAvatarUrl, setTempAvatarUrl] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -137,7 +149,6 @@ export default function MapaMobilePage() {
   useEffect(() => {
     setMapHeight(window.innerHeight);
     
-    // Pobieranie danych z pamięci
     const savedNick = localStorage.getItem('spot_user_nick');
     if (savedNick) setUserNick(savedNick);
     
@@ -151,7 +162,7 @@ export default function MapaMobilePage() {
     if (savedRadius) setVisibilityRadius(parseInt(savedRadius, 10));
     
     fetchSpots();
-    fetchEvents(); // NOWE
+    fetchEvents();
 
     const channel = supabase.channel('live-map', {
       config: { presence: { key: sessionId.current } }
@@ -174,7 +185,6 @@ export default function MapaMobilePage() {
 
     realtimeChannel.current = channel;
 
-    // NOWE: Nasłuchiwanie na zmiany w tabeli events (żeby WSZYSCY widzieli event na żywo)
     const eventsChannel = supabase
       .channel('events-changes')
       .on(
@@ -220,17 +230,16 @@ export default function MapaMobilePage() {
       return () => {
         navigator.geolocation.clearWatch(watchId);
         channel.unsubscribe();
-        eventsChannel.unsubscribe(); // NOWE
+        eventsChannel.unsubscribe();
       };
     }
 
     return () => {
       channel.unsubscribe();
-      eventsChannel.unsubscribe(); // NOWE
+      eventsChannel.unsubscribe();
     };
   }, []);
 
-  // Aktualizacja statusu na żywo (teraz wysyłamy też nasz radius!)
   useEffect(() => {
     if (realtimeChannel.current && userLocation) {
       if (shareLocation) {
@@ -240,7 +249,7 @@ export default function MapaMobilePage() {
           lat: userLocation[0],
           lng: userLocation[1],
           isVisible: true,
-          radius: visibilityRadius // Dodajemy naszą preferowaną odległość
+          radius: visibilityRadius
         });
       } else {
         realtimeChannel.current.track({ isVisible: false });
@@ -263,11 +272,12 @@ export default function MapaMobilePage() {
     }
   };
 
-  // NOWE
   const fetchEvents = async () => {
     const { data, error } = await supabase.from('events').select('*');
     if (!error && data) {
-      setEvents(data as EventItem[]);
+      // Pobieramy tylko aktywne eventy
+      const active = (data as EventItem[]).filter(isEventActive);
+      setEvents(active);
     }
   };
 
@@ -290,8 +300,8 @@ export default function MapaMobilePage() {
     setSelectedAnchor(null);
     setReviewSpot(null);
     setPreviewSpot(null);
-    setCreatingEventSpot(null); // NOWE
-    setActiveEvent(null); // NOWE
+    setCreatingEventSpot(null);
+    setActiveEvent(null);
   };
 
   const handleMapClick = ({ latLng }: { latLng: [number, number] }) => {
@@ -452,7 +462,6 @@ export default function MapaMobilePage() {
     fetchSpots();
   };
 
-  // NOWE: Tworzenie eventu na spocie
   const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!creatingEventSpot || !eventTitle.trim() || !eventTime) {
@@ -478,14 +487,16 @@ export default function MapaMobilePage() {
     }
 
     if (data && data.length > 0) {
-      setEvents((prev) => [...prev, data[0] as EventItem]);
+      const created = data[0] as EventItem;
+      if (isEventActive(created)) {
+        setEvents((prev) => [...prev, created]);
+      }
       setEventTitle('');
       setEventTime('');
       closeAllPanels();
     }
   };
 
-  // NOWE: Dołączanie do eventu
   const handleJoinEvent = async (event: EventItem) => {
     if (userNick === 'Anonim') {
       alert("Ustaw swój nick w ustawieniach (⚙️), zanim dołączysz do eventu!");
@@ -516,7 +527,6 @@ export default function MapaMobilePage() {
     }
   };
 
-  // NOWE: Rezygnacja z udziału
   const handleLeaveEvent = async (event: EventItem) => {
     setLoading(true);
     const updatedParticipants = event.participants.filter((p) => p !== userNick);
@@ -547,12 +557,14 @@ export default function MapaMobilePage() {
     return (sum / spot.reviews.length).toFixed(1);
   };
 
-  // NOWE: helper - znajdź event dla danego spota (bierzemy najnowszy, jeśli jest kilka)
   const getEventForSpot = (spotId: number) => {
-    const spotEvents = events.filter((e) => e.spot_id === spotId);
+    const spotEvents = events.filter((e) => e.spot_id === spotId && isEventActive(e));
     if (spotEvents.length === 0) return null;
     return spotEvents[spotEvents.length - 1];
   };
+
+  // Filtrujemy tylko aktywne eventy do wyświetlenia na mapie
+  const activeEventsList = events.filter(isEventActive);
 
   const isSheetOpen = activeSpot || selectedAnchor || reviewSpot || previewSpot || creatingEventSpot || activeEvent;
 
@@ -577,9 +589,8 @@ export default function MapaMobilePage() {
             {/* INNI UŻYTKOWNICY NA ŻYWO */}
             {userLocation && liveUsers.map((liveUser) => {
               const distance = getDistanceInMeters(userLocation[0], userLocation[1], liveUser.lat, liveUser.lng);
-              const userRadius = liveUser.radius || 100; // Domyślnie 100, jeśli używają starszej wersji apki
+              const userRadius = liveUser.radius || 100;
               
-              // Jeśli jesteśmy dalej niż obcy użytkownik sobie tego życzy, nie pokazujemy go!
               if (distance > userRadius) return null; 
 
               return (
@@ -647,8 +658,8 @@ export default function MapaMobilePage() {
               />
             ))}
 
-            {/* NOWE: DYMKI EVENTÓW NAD SPOTAMI - widzi to każdy, pulsuje */}
-            {events.map((eventItem) => {
+            {/* DYMKI AKTYWNYCH EVENTÓW */}
+            {activeEventsList.map((eventItem) => {
               const spot = spots.find((s) => s.id === eventItem.spot_id);
               if (!spot) return null;
 
@@ -771,7 +782,7 @@ export default function MapaMobilePage() {
           <div className="flex-1 overflow-y-auto px-5 pb-8 scrollbar-none">
             
             {previewSpot && (() => {
-              const spotEvent = getEventForSpot(previewSpot.id); // NOWE
+              const spotEvent = getEventForSpot(previewSpot.id);
               return (
               <div className="animate-in fade-in zoom-in-95 duration-200">
                 <div className="flex justify-between items-start mb-4">
@@ -822,7 +833,6 @@ export default function MapaMobilePage() {
                     <span>⭐ Oceń spot</span><span>→</span>
                   </button>
 
-                  {/* NOWE: przycisk eventu - inny wariant jeśli event już istnieje */}
                   {spotEvent ? (
                     <button
                       onClick={() => {
@@ -1048,7 +1058,6 @@ export default function MapaMobilePage() {
               </form>
             )}
 
-            {/* NOWE: Formularz tworzenia eventu */}
             {creatingEventSpot && (
               <form onSubmit={handleCreateEvent} className="flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200">
                 <div className="flex justify-between items-center mb-1">
@@ -1082,7 +1091,7 @@ export default function MapaMobilePage() {
                 </div>
 
                 <div className="text-xs text-slate-500 bg-slate-800/40 border border-slate-800 rounded-xl p-3">
-                  Event pojawi się na mapie jako pulsująca pinezka widoczna dla wszystkich użytkowników.
+                  Event zniknie automatycznie po upływie godziny od wyznaczonej godziny rozpoczęcia.
                 </div>
 
                 <button
@@ -1107,13 +1116,12 @@ export default function MapaMobilePage() {
               </form>
             )}
 
-            {/* NOWE: Panel szczegółów eventu (widoczny dla każdego) */}
             {activeEvent && (() => {
               const eventSpot = spots.find((s) => s.id === activeEvent.spot_id);
               const isJoined = activeEvent.participants.includes(userNick);
               return (
                 <div className="animate-in fade-in zoom-in-95 duration-200">
-                  <div className="flex justify-between items-start mb-4">
+                  <div className="flex justify-between items-center mb-4">
                     <h2 className="text-xl font-bold text-white leading-tight flex items-center gap-2">
                       🎉 {activeEvent.title}
                     </h2>
@@ -1254,7 +1262,6 @@ export default function MapaMobilePage() {
               </div>
             </div>
 
-            {/* NOWY SUWAK ZASIĘGU (pojawia się tylko jak włączono widoczność) */}
             {tempShare && (
               <div className="mb-5 bg-slate-950 p-3.5 rounded-xl border border-slate-800 animate-in fade-in slide-in-from-top-2 duration-200">
                 <div className="flex justify-between items-center mb-2">
