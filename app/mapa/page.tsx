@@ -28,7 +28,7 @@ interface EventItem {
   id: number;
   spot_id: number;
   title: string;
-  time: string; // format "HH:mm"
+  time: string;
   creator_nick: string;
   participants: string[];
   created_at: string;
@@ -42,6 +42,13 @@ interface LiveUser {
   lng: number;
   isVisible: boolean;
   radius: number; 
+}
+
+interface Friendship {
+  id: number;
+  sender_nick: string;
+  receiver_nick: string;
+  status: 'pending' | 'accepted';
 }
 
 const AVAILABLE_VIBES = [
@@ -72,15 +79,12 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
   return R * c;
 }
 
-// Sprawdza, czy event jest ważny (czy nie minęła godzina od czasu rozpoczęcia)
 function isEventActive(event: EventItem) {
   if (!event.time) return true;
   const [hours, minutes] = event.time.split(':').map(Number);
   
   const baseDate = new Date(event.created_at || Date.now());
   const eventDate = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), hours, minutes);
-  
-  // Czas wygaśnięcia = godzina startu + 1 godzina
   const expirationTime = new Date(eventDate.getTime() + 60 * 60 * 1000);
   
   return new Date() <= expirationTime;
@@ -108,19 +112,25 @@ export default function MapaMobilePage() {
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('');
   
-  // Ustawienia konta
+  // Ustawienia konta i znajomi
   const [userNick, setUserNick] = useState<string>('Anonim');
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [shareLocation, setShareLocation] = useState(false);
   const [visibilityRadius, setVisibilityRadius] = useState<number>(100);
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'friends'>('profile'); // Zakładki w ustawieniach
   const [tempNick, setTempNick] = useState('');
   const [tempShare, setTempShare] = useState(false);
   const [tempRadius, setTempRadius] = useState(100);
   const [tempAvatarFile, setTempAvatarFile] = useState<File | null>(null);
   const [tempAvatarUrl, setTempAvatarUrl] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+
+  // Stan znajomych
+  const [friendInputNick, setFriendInputNick] = useState('');
+  const [friendsList, setFriendsList] = useState<string[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<Friendship[]>([]);
   
   const [rating, setRating] = useState<number>(0);
   const [comment, setComment] = useState<string>('');
@@ -150,7 +160,10 @@ export default function MapaMobilePage() {
     setMapHeight(window.innerHeight);
     
     const savedNick = localStorage.getItem('spot_user_nick');
-    if (savedNick) setUserNick(savedNick);
+    if (savedNick) {
+      setUserNick(savedNick);
+      fetchFriendships(savedNick);
+    }
     
     const savedAvatar = localStorage.getItem('spot_user_avatar');
     if (savedAvatar) setUserAvatar(savedAvatar);
@@ -209,6 +222,19 @@ export default function MapaMobilePage() {
       )
       .subscribe();
 
+    // Nasłuchiwanie zmian znajomych na żywo
+    const friendshipsChannel = supabase
+      .channel('friendships-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'friendships' },
+        () => {
+          const currentNick = localStorage.getItem('spot_user_nick');
+          if (currentNick) fetchFriendships(currentNick);
+        }
+      )
+      .subscribe();
+
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
@@ -231,14 +257,97 @@ export default function MapaMobilePage() {
         navigator.geolocation.clearWatch(watchId);
         channel.unsubscribe();
         eventsChannel.unsubscribe();
+        friendshipsChannel.unsubscribe();
       };
     }
 
     return () => {
       channel.unsubscribe();
       eventsChannel.unsubscribe();
+      friendshipsChannel.unsubscribe();
     };
   }, []);
+
+  // Pobieranie relacji znajomych dla aktualnego nicku
+  const fetchFriendships = async (nick: string) => {
+    const { data, error } = await supabase
+      .from('friendships')
+      .select('*')
+      .or(`sender_nick.eq.${nick},receiver_nick.eq.${nick}`);
+
+    if (!error && data) {
+      const accepted: string[] = [];
+      const pending: Friendship[] = [];
+
+      data.forEach((f: Friendship) => {
+        if (f.status === 'accepted') {
+          const friend = f.sender_nick === nick ? f.receiver_nick : f.sender_nick;
+          accepted.push(friend);
+        } else if (f.status === 'pending' && f.receiver_nick === nick) {
+          pending.push(f);
+        }
+      });
+
+      setFriendsList(accepted);
+      setPendingRequests(pending);
+    }
+  };
+
+  const sendFriendRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const target = friendInputNick.trim();
+    if (!target) return;
+    if (target === userNick) {
+      alert("Nie możesz dodać samego siebie do znajomych!");
+      return;
+    }
+
+    // Sprawdź czy już nie istnieje relacja
+    const { data: existing } = await supabase
+      .from('friendships')
+      .select('*')
+      .or(`and(sender_nick.eq.${userNick},receiver_nick.eq.${target}),and(sender_nick.eq.${target},receiver_nick.eq.${userNick})`);
+
+    if (existing && existing.length > 0) {
+      alert("Zaproszenie do tego użytkownika już istnieje lub jesteście już znajomymi!");
+      return;
+    }
+
+    const { error } = await supabase.from('friendships').insert([
+      { sender_nick: userNick, receiver_nick: target, status: 'pending' }
+    ]);
+
+    if (error) {
+      alert(`Błąd: ${error.message}`);
+      return;
+    }
+
+    alert(`Wysłano zaproszenie do @${target}!`);
+    setFriendInputNick('');
+    fetchFriendships(userNick);
+  };
+
+  const acceptFriendRequest = async (friendshipId: number) => {
+    const { error } = await supabase
+      .from('friendships')
+      .update({ status: 'accepted' })
+      .eq('id', friendshipId);
+
+    if (!error) {
+      fetchFriendships(userNick);
+    }
+  };
+
+  const removeFriendship = async (friendshipId: number) => {
+    const { error } = await supabase
+      .from('friendships')
+      .delete()
+      .eq('id', friendshipId);
+
+    if (!error) {
+      fetchFriendships(userNick);
+    }
+  };
 
   useEffect(() => {
     if (realtimeChannel.current && userLocation) {
@@ -275,7 +384,6 @@ export default function MapaMobilePage() {
   const fetchEvents = async () => {
     const { data, error } = await supabase.from('events').select('*');
     if (!error && data) {
-      // Pobieramy tylko aktywne eventy
       const active = (data as EventItem[]).filter(isEventActive);
       setEvents(active);
     }
@@ -383,6 +491,7 @@ export default function MapaMobilePage() {
       localStorage.setItem('spot_user_avatar', finalAvatarUrl);
     }
 
+    fetchFriendships(finalNick);
     setIsSavingSettings(false);
     setIsSettingsOpen(false);
   };
@@ -563,9 +672,7 @@ export default function MapaMobilePage() {
     return spotEvents[spotEvents.length - 1];
   };
 
-  // Filtrujemy tylko aktywne eventy do wyświetlenia na mapie
   const activeEventsList = events.filter(isEventActive);
-
   const isSheetOpen = activeSpot || selectedAnchor || reviewSpot || previewSpot || creatingEventSpot || activeEvent;
 
   return (
@@ -586,12 +693,14 @@ export default function MapaMobilePage() {
             mouseEvents={true}
             onClick={handleMapClick}
           >
-            {/* INNI UŻYTKOWNICY NA ŻYWO */}
+            {/* INNI UŻYTKOWNICY NA ŻYWO (Z WYRÓŻNIENIEM ZNAJOMYCH) */}
             {userLocation && liveUsers.map((liveUser) => {
               const distance = getDistanceInMeters(userLocation[0], userLocation[1], liveUser.lat, liveUser.lng);
               const userRadius = liveUser.radius || 100;
               
               if (distance > userRadius) return null; 
+
+              const isFriend = friendsList.includes(liveUser.nick);
 
               return (
                 <Overlay key={liveUser.id} anchor={[liveUser.lat, liveUser.lng]} offset={[14, 14]}>
@@ -599,18 +708,18 @@ export default function MapaMobilePage() {
                     className="relative flex items-center justify-center w-7 h-7 pointer-events-auto group cursor-pointer"
                     onClick={(e) => {
                       e.stopPropagation();
-                      alert(`Użytkownik @${liveUser.nick} jest ok. ${Math.round(distance)} metrów od Ciebie!`);
+                      alert(`Użytkownik @${liveUser.nick} jest ok. ${Math.round(distance)} metrów od Ciebie! ${isFriend ? '⭐ (Mój znajomy)' : ''}`);
                     }}
                   >
-                    <div className="absolute w-full h-full bg-emerald-500 rounded-full animate-ping opacity-40"></div>
+                    <div className={`absolute w-full h-full rounded-full animate-ping opacity-50 ${isFriend ? 'bg-amber-400' : 'bg-emerald-500'}`}></div>
                     {liveUser.avatar ? (
                       <img 
                         src={liveUser.avatar} 
                         alt={liveUser.nick}
-                        className="relative w-7 h-7 rounded-full border-2 border-emerald-400 object-cover shadow-lg" 
+                        className={`relative w-7 h-7 rounded-full border-2 object-cover shadow-lg ${isFriend ? 'border-amber-400' : 'border-emerald-400'}`} 
                       />
                     ) : (
-                      <div className="relative flex items-center justify-center w-7 h-7 bg-emerald-500 border-2 border-white rounded-full shadow-md text-[9px] font-bold text-white">
+                      <div className={`relative flex items-center justify-center w-7 h-7 border-2 border-white rounded-full shadow-md text-[9px] font-bold text-white ${isFriend ? 'bg-amber-500' : 'bg-emerald-500'}`}>
                         {liveUser.nick.substring(0, 2).toUpperCase()}
                       </div>
                     )}
@@ -725,6 +834,7 @@ export default function MapaMobilePage() {
             setTempShare(shareLocation);
             setTempRadius(visibilityRadius);
             setTempAvatarFile(null);
+            setSettingsTab('profile');
             setIsSettingsOpen(true);
             closeAllPanels();
           }}
@@ -734,6 +844,9 @@ export default function MapaMobilePage() {
             <img src={userAvatar} alt="Awatar" className={`w-4 h-4 rounded-full object-cover border ${shareLocation ? 'border-emerald-400' : 'border-slate-700'}`} />
           )}
           <span className={`text-xs font-semibold ${shareLocation ? 'text-emerald-400' : 'text-slate-300'}`}>@{userNick}</span>
+          {pendingRequests.length > 0 && (
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+          )}
           <span className="text-[10px] opacity-70">⚙️</span>
         </button>
       </header>
@@ -1196,11 +1309,11 @@ export default function MapaMobilePage() {
         </div>
       )}
 
-      {/* --- MODAL USTAWIEŃ KONTA --- */}
+      {/* --- MODAL USTAWIENIA / ZNAJOMI --- */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[28px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex justify-between items-center mb-5">
+            <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold text-white flex items-center gap-2">
                 ⚙️ Ustawienia
               </h2>
@@ -1212,92 +1325,182 @@ export default function MapaMobilePage() {
               </button>
             </div>
 
-            <div className="mb-4 flex flex-col items-center">
-              <div className="relative w-20 h-20 mb-2 rounded-full border-2 border-slate-700 bg-slate-800 flex items-center justify-center overflow-hidden">
-                {tempAvatarUrl ? (
-                  <img src={tempAvatarUrl} alt="Podgląd" className="w-full h-full object-cover" />
-                ) : (
-                  <span className="text-2xl">👤</span>
+            {/* Zakładki */}
+            <div className="flex bg-slate-950 p-1 rounded-xl mb-5 border border-slate-800">
+              <button
+                onClick={() => setSettingsTab('profile')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${settingsTab === 'profile' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+              >
+                Profil
+              </button>
+              <button
+                onClick={() => setSettingsTab('friends')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all relative ${settingsTab === 'friends' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+              >
+                Znajomi
+                {pendingRequests.length > 0 && (
+                  <span className="absolute top-1.5 right-2 w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
                 )}
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  onChange={handleAvatarSelect}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                />
-              </div>
-              <p className="text-[10px] text-blue-400 font-medium">Kliknij, by zmienić zdjęcie</p>
+              </button>
             </div>
 
-            <div className="mb-5">
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                Twój obecny Nick
-              </label>
-              <input 
-                type="text" 
-                value={tempNick}
-                onChange={(e) => setTempNick(e.target.value)}
-                placeholder="Podaj nowy nick..."
-                className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-blue-500 text-center"
-              />
-            </div>
-
-            <div className={`bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3 ${tempShare ? 'mb-3' : 'mb-5'}`}>
-              <div className="pt-0.5">
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input 
-                    type="checkbox" 
-                    checked={tempShare} 
-                    onChange={() => setTempShare(!tempShare)} 
-                    className="sr-only peer" 
-                  />
-                  <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
-                </label>
-              </div>
-              <div>
-                <p className="text-xs font-bold text-slate-200">Tryb widmo / Widoczność</p>
-                <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
-                  Zaznacz, aby inni użytkownicy mogli zobaczyć Cię na żywo.
-                </p>
-              </div>
-            </div>
-
-            {tempShare && (
-              <div className="mb-5 bg-slate-950 p-3.5 rounded-xl border border-slate-800 animate-in fade-in slide-in-from-top-2 duration-200">
-                <div className="flex justify-between items-center mb-2">
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                    Zasięg widoczności
-                  </label>
-                  <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md">
-                    {tempRadius} metrów
-                  </span>
+            {settingsTab === 'profile' ? (
+              <div className="animate-in fade-in duration-200">
+                <div className="mb-4 flex flex-col items-center">
+                  <div className="relative w-20 h-20 mb-2 rounded-full border-2 border-slate-700 bg-slate-800 flex items-center justify-center overflow-hidden">
+                    {tempAvatarUrl ? (
+                      <img src={tempAvatarUrl} alt="Podgląd" className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-2xl">👤</span>
+                    )}
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={handleAvatarSelect}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                  </div>
+                  <p className="text-[10px] text-blue-400 font-medium">Kliknij, by zmienić zdjęcie</p>
                 </div>
-                
-                <input 
-                  type="range" 
-                  min="10" 
-                  max="1000" 
-                  step="10" 
-                  value={tempRadius}
-                  onChange={(e) => setTempRadius(Number(e.target.value))}
-                  className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500 outline-none"
-                />
-                
-                <div className="flex justify-between text-[9px] text-slate-500 mt-2 font-medium">
-                  <span>10m</span>
-                  <span>500m</span>
-                  <span>1km</span>
+
+                <div className="mb-4">
+                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Twój obecny Nick
+                  </label>
+                  <input 
+                    type="text" 
+                    value={tempNick}
+                    onChange={(e) => setTempNick(e.target.value)}
+                    placeholder="Podaj nowy nick..."
+                    className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-blue-500 text-center"
+                  />
+                </div>
+
+                <div className={`bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3 ${tempShare ? 'mb-3' : 'mb-4'}`}>
+                  <div className="pt-0.5">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input 
+                        type="checkbox" 
+                        checked={tempShare} 
+                        onChange={() => setTempShare(!tempShare)} 
+                        className="sr-only peer" 
+                      />
+                      <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                    </label>
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-slate-200">Tryb widmo / Widoczność</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
+                      Zaznacz, aby inni użytkownicy mogli zobaczyć Cię na żywo.
+                    </p>
+                  </div>
+                </div>
+
+                {tempShare && (
+                  <div className="mb-4 bg-slate-950 p-3.5 rounded-xl border border-slate-800">
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                        Zasięg widoczności
+                      </label>
+                      <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md">
+                        {tempRadius} metrów
+                      </span>
+                    </div>
+                    
+                    <input 
+                      type="range" 
+                      min="10" 
+                      max="1000" 
+                      step="10" 
+                      value={tempRadius}
+                      onChange={(e) => setTempRadius(Number(e.target.value))}
+                      className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500 outline-none"
+                    />
+                  </div>
+                )}
+
+                <button 
+                  onClick={saveUserSettings}
+                  disabled={isSavingSettings}
+                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg shadow-blue-600/30 transition-all active:scale-95"
+                >
+                  {isSavingSettings ? 'Zapisywanie...' : 'Zapisz profil'}
+                </button>
+              </div>
+            ) : (
+              <div className="animate-in fade-in duration-200 flex flex-col gap-4 max-h-[60vh] overflow-y-auto">
+                {/* WYSYŁANIE ZAPROSZENIA */}
+                <form onSubmit={sendFriendRequest} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={friendInputNick}
+                    onChange={(e) => setFriendInputNick(e.target.value)}
+                    placeholder="Wpisz nick znajomego..."
+                    className="flex-1 p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-xs outline-none focus:border-blue-500"
+                  />
+                  <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 rounded-xl text-xs">
+                    Dodaj
+                  </button>
+                </form>
+
+                {/* OCZEKUJĄCE ZAPROSZENIA */}
+                {pendingRequests.length > 0 && (
+                  <div>
+                    <p className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider mb-2">
+                      Oczekujące zaproszenia ({pendingRequests.length})
+                    </p>
+                    <div className="flex flex-col gap-2">
+                      {pendingRequests.map((req) => (
+                        <div key={req.id} className="bg-slate-950 border border-amber-500/30 p-3 rounded-xl flex justify-between items-center">
+                          <span className="text-xs font-bold text-white">@{req.sender_nick}</span>
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={() => acceptFriendRequest(req.id)}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg"
+                            >
+                              Przyjmij
+                            </button>
+                            <button
+                              onClick={() => removeFriendship(req.id)}
+                              className="bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] px-2 py-1.5 rounded-lg"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* LISTA ZNAJOMYCH */}
+                <div>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                    Twoi znajomi ({friendsList.length})
+                  </p>
+                  {friendsList.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      {friendsList.map((friendNick, idx) => (
+                        <div key={idx} className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex justify-between items-center">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span className="text-xs font-bold text-white">@{friendNick}</span>
+                          </div>
+                          <span className="text-[10px] text-amber-400 font-semibold bg-amber-400/10 px-2 py-0.5 rounded-md">
+                            ⭐ Znajomy
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-6 bg-slate-950/50 rounded-xl border border-slate-800 border-dashed text-slate-500 text-xs">
+                      Brak znajomych. Wpisz czyjeś konto powyżej, aby zaprosić!
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
-            <button 
-              onClick={saveUserSettings}
-              disabled={isSavingSettings}
-              className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg shadow-blue-600/30 transition-all active:scale-95"
-            >
-              {isSavingSettings ? 'Zapisywanie...' : 'Zapisz ustawienia'}
-            </button>
           </div>
         </div>
       )}
