@@ -24,7 +24,7 @@ interface Review {
   created_at: string;
 }
 
-// Interfejs dla innych użytkowników na żywo
+// Dodano "radius", aby inni wiedzieli, z jakiej odległości chcesz być widoczny
 interface LiveUser {
   id: string;
   nick: string;
@@ -32,6 +32,7 @@ interface LiveUser {
   lat: number;
   lng: number;
   isVisible: boolean;
+  radius: number; 
 }
 
 const AVAILABLE_VIBES = [
@@ -46,9 +47,8 @@ const AVAILABLE_VIBES = [
 const DEFAULT_CENTER: [number, number] = [52.2297, 21.0122];
 const DEFAULT_ZOOM = 12;
 
-// Funkcja matematyczna do obliczania odległości w metrach (Wzór Haversine)
 function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const R = 6371e3; // Promień Ziemi w metrach
+  const R = 6371e3;
   const rad = Math.PI / 180;
   const φ1 = lat1 * rad;
   const φ2 = lat2 * rad;
@@ -82,10 +82,12 @@ export default function MapaMobilePage() {
   const [userNick, setUserNick] = useState<string>('Anonim');
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [shareLocation, setShareLocation] = useState(false);
+  const [visibilityRadius, setVisibilityRadius] = useState<number>(100); // NOWE: Zasięg widoczności
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [tempNick, setTempNick] = useState('');
   const [tempShare, setTempShare] = useState(false);
+  const [tempRadius, setTempRadius] = useState(100); // Tymczasowy promień do suwaka w ustawieniach
   const [tempAvatarFile, setTempAvatarFile] = useState<File | null>(null);
   const [tempAvatarUrl, setTempAvatarUrl] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -110,13 +112,14 @@ export default function MapaMobilePage() {
   const [mapZoom, setMapZoom] = useState<number>(DEFAULT_ZOOM);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   
-  // NOWE: Unikalne ID sesji użytkownika i lista innych użytkowników na mapie
   const sessionId = useRef(`user-${Math.random().toString(36).substring(2, 10)}`);
   const realtimeChannel = useRef<any>(null);
   const [liveUsers, setLiveUsers] = useState<LiveUser[]>([]);
 
   useEffect(() => {
     setMapHeight(window.innerHeight);
+    
+    // Pobieranie danych z pamięci
     const savedNick = localStorage.getItem('spot_user_nick');
     if (savedNick) setUserNick(savedNick);
     
@@ -126,9 +129,11 @@ export default function MapaMobilePage() {
     const savedShare = localStorage.getItem('spot_user_shared');
     if (savedShare === 'true') setShareLocation(true);
     
+    const savedRadius = localStorage.getItem('spot_user_radius');
+    if (savedRadius) setVisibilityRadius(parseInt(savedRadius, 10));
+    
     fetchSpots();
 
-    // Inicjalizacja kanału Realtime
     const channel = supabase.channel('live-map', {
       config: { presence: { key: sessionId.current } }
     });
@@ -137,9 +142,8 @@ export default function MapaMobilePage() {
       const presenceState = channel.presenceState();
       const users: LiveUser[] = [];
       
-      // Wyciągamy dane wszystkich innych użytkowników
       for (const id in presenceState) {
-        if (id !== sessionId.current) { // Pomijamy nas samych
+        if (id !== sessionId.current) {
           const data = presenceState[id][0] as unknown as LiveUser;
           if (data && data.isVisible && data.lat && data.lng) {
             users.push({ ...data, id });
@@ -151,7 +155,6 @@ export default function MapaMobilePage() {
 
     realtimeChannel.current = channel;
 
-    // Inicjalizacja GPS
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
@@ -177,7 +180,7 @@ export default function MapaMobilePage() {
     }
   }, []);
 
-  // Aktualizacja statusu na żywo (wysyłanie naszych współrzędnych w eter)
+  // Aktualizacja statusu na żywo (teraz wysyłamy też nasz radius!)
   useEffect(() => {
     if (realtimeChannel.current && userLocation) {
       if (shareLocation) {
@@ -186,14 +189,14 @@ export default function MapaMobilePage() {
           avatar: userAvatar,
           lat: userLocation[0],
           lng: userLocation[1],
-          isVisible: true
+          isVisible: true,
+          radius: visibilityRadius // Dodajemy naszą preferowaną odległość
         });
       } else {
-        // Użytkownik włączył tryb widmo, wysyłamy informację, żeby go ukryć
         realtimeChannel.current.track({ isVisible: false });
       }
     }
-  }, [userLocation, shareLocation, userNick, userAvatar]);
+  }, [userLocation, shareLocation, userNick, userAvatar, visibilityRadius]);
 
   useEffect(() => {
     if (activeSpot) {
@@ -299,9 +302,11 @@ export default function MapaMobilePage() {
     const finalNick = tempNick.trim() || 'Anonim';
     setUserNick(finalNick);
     setShareLocation(tempShare);
+    setVisibilityRadius(tempRadius);
     
     localStorage.setItem('spot_user_nick', finalNick);
     localStorage.setItem('spot_user_shared', tempShare ? 'true' : 'false');
+    localStorage.setItem('spot_user_radius', tempRadius.toString());
     
     if (finalAvatarUrl) {
       setUserAvatar(finalAvatarUrl);
@@ -413,11 +418,13 @@ export default function MapaMobilePage() {
             mouseEvents={true}
             onClick={handleMapClick}
           >
-            {/* INNI UŻYTKOWNICY NA ŻYWO (< 100m) */}
+            {/* INNI UŻYTKOWNICY NA ŻYWO */}
             {userLocation && liveUsers.map((liveUser) => {
               const distance = getDistanceInMeters(userLocation[0], userLocation[1], liveUser.lat, liveUser.lng);
+              const userRadius = liveUser.radius || 100; // Domyślnie 100, jeśli używają starszej wersji apki
               
-              if (distance > 100) return null; // Filtrujemy poza 100 metrami
+              // Jeśli jesteśmy dalej niż obcy użytkownik sobie tego życzy, nie pokazujemy go!
+              if (distance > userRadius) return null; 
 
               return (
                 <Overlay key={liveUser.id} anchor={[liveUser.lat, liveUser.lng]} offset={[14, 14]}>
@@ -440,10 +447,6 @@ export default function MapaMobilePage() {
                         {liveUser.nick.substring(0, 2).toUpperCase()}
                       </div>
                     )}
-                    {/* Tooltip przy najechaniu (działa głównie na komputerze, na tel jest alert) */}
-                    <div className="absolute bottom-full mb-2 hidden group-active:flex bg-slate-900/95 text-emerald-400 font-bold border border-slate-700 shadow-xl text-[10px] px-2.5 py-1 rounded-lg whitespace-nowrap">
-                      @{liveUser.nick} ({Math.round(distance)}m)
-                    </div>
                   </div>
                 </Overlay>
               );
@@ -495,7 +498,6 @@ export default function MapaMobilePage() {
         )}
       </div>
 
-      {/* Przycisk GPS */}
       <button
         onClick={() => {
           if (userLocation) {
@@ -510,7 +512,6 @@ export default function MapaMobilePage() {
         </svg>
       </button>
 
-      {/* GÓRNY PASEK */}
       <header className="absolute top-4 left-4 right-4 z-20 flex justify-between items-center pointer-events-none">
         <div className="flex items-center gap-2 bg-slate-900/95 backdrop-blur-md border border-slate-800 px-3.5 py-2 rounded-full shadow-lg pointer-events-auto">
           <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -525,6 +526,7 @@ export default function MapaMobilePage() {
             setTempNick(userNick);
             setTempAvatarUrl(userAvatar);
             setTempShare(shareLocation);
+            setTempRadius(visibilityRadius);
             setTempAvatarFile(null);
             setIsSettingsOpen(true);
             closeAllPanels();
@@ -539,7 +541,6 @@ export default function MapaMobilePage() {
         </button>
       </header>
 
-      {/* PRZYCISK DODAWANIA SPOTA W AKTUALNEJ LOKALIZACJI */}
       {!isSheetOpen && !isSettingsOpen && (
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2.5 w-max">
           {userLocation ? (
@@ -566,7 +567,6 @@ export default function MapaMobilePage() {
         </div>
       )}
 
-      {/* WSPÓLNY INTERAKTYWNY BOTTOM SHEET */}
       {isSheetOpen && (
         <div 
           className={`absolute inset-x-0 bottom-0 z-30 bg-slate-900/95 backdrop-blur-xl border-t border-slate-800 rounded-t-[28px] shadow-2xl flex flex-col pointer-events-auto ${isDragging ? '' : 'transition-all duration-300'}`}
@@ -876,7 +876,7 @@ export default function MapaMobilePage() {
               />
             </div>
 
-            <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3 mb-5">
+            <div className={`bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3 ${tempShare ? 'mb-3' : 'mb-5'}`}>
               <div className="pt-0.5">
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input 
@@ -891,10 +891,40 @@ export default function MapaMobilePage() {
               <div>
                 <p className="text-xs font-bold text-slate-200">Tryb widmo / Widoczność</p>
                 <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
-                  Inni użytkownicy w promieniu <strong className="text-emerald-400">100m</strong> zobaczą Twoją ikonę na mapie.
+                  Zaznacz, aby inni użytkownicy mogli zobaczyć Cię na żywo.
                 </p>
               </div>
             </div>
+
+            {/* NOWY SUWAK ZASIĘGU (pojawia się tylko jak włączono widoczność) */}
+            {tempShare && (
+              <div className="mb-5 bg-slate-950 p-3.5 rounded-xl border border-slate-800 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    Zasięg widoczności
+                  </label>
+                  <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md">
+                    {tempRadius} metrów
+                  </span>
+                </div>
+                
+                <input 
+                  type="range" 
+                  min="10" 
+                  max="1000" 
+                  step="10" 
+                  value={tempRadius}
+                  onChange={(e) => setTempRadius(Number(e.target.value))}
+                  className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500 outline-none"
+                />
+                
+                <div className="flex justify-between text-[9px] text-slate-500 mt-2 font-medium">
+                  <span>10m</span>
+                  <span>500m</span>
+                  <span>1km</span>
+                </div>
+              </div>
+            )}
 
             <button 
               onClick={saveUserSettings}
