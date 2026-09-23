@@ -4,7 +4,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Map, Marker, Overlay } from 'pigeon-maps';
 import { supabase } from '@/app/lib/supabase';
 
-// --- INTERFEJSY ---
 interface Spot {
   id: number;
   name: string;
@@ -94,7 +93,6 @@ export default function MapaMobilePage() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
 
-  // Stany paneli
   const [selectedAnchor, setSelectedAnchor] = useState<[number, number] | null>(null);
   const [previewSpot, setPreviewSpot] = useState<Spot | null>(null);
   const [activeSpot, setActiveSpot] = useState<Spot | null>(null);   
@@ -102,24 +100,21 @@ export default function MapaMobilePage() {
   const [creatingEventSpot, setCreatingEventSpot] = useState<Spot | null>(null);
   const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
   
-  // Zmienne Formularzy
   const [spotName, setSpotName] = useState('');
   const [selectedVibes, setSelectedVibes] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Formularz eventu
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('');
   
-  // Ustawienia konta i znajomi
   const [userNick, setUserNick] = useState<string>('Anonim');
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [shareLocation, setShareLocation] = useState(false);
   const [visibilityRadius, setVisibilityRadius] = useState<number>(100);
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'profile' | 'friends'>('profile'); // Zakładki w ustawieniach
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'friends'>('profile');
   const [tempNick, setTempNick] = useState('');
   const [tempShare, setTempShare] = useState(false);
   const [tempRadius, setTempRadius] = useState(100);
@@ -127,7 +122,6 @@ export default function MapaMobilePage() {
   const [tempAvatarUrl, setTempAvatarUrl] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
-  // Stan znajomych
   const [friendInputNick, setFriendInputNick] = useState('');
   const [friendsList, setFriendsList] = useState<string[]>([]);
   const [pendingRequests, setPendingRequests] = useState<Friendship[]>([]);
@@ -140,13 +134,11 @@ export default function MapaMobilePage() {
 
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
 
-  // Stany suwaka
   const [sheetHeight, setSheetHeight] = useState<number>(40);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
 
-  // Stany GPS, Mapy i Realtime
   const [mapHeight, setMapHeight] = useState<number>(0);
   const [mapCenter, setMapCenter] = useState<[number, number]>(DEFAULT_CENTER);
   const [mapZoom, setMapZoom] = useState<number>(DEFAULT_ZOOM);
@@ -222,7 +214,6 @@ export default function MapaMobilePage() {
       )
       .subscribe();
 
-    // Nasłuchiwanie zmian znajomych na żywo
     const friendshipsChannel = supabase
       .channel('friendships-changes')
       .on(
@@ -268,7 +259,6 @@ export default function MapaMobilePage() {
     };
   }, []);
 
-  // Pobieranie relacji znajomych dla aktualnego nicku
   const fetchFriendships = async (nick: string) => {
     const { data, error } = await supabase
       .from('friendships')
@@ -302,7 +292,6 @@ export default function MapaMobilePage() {
       return;
     }
 
-    // Sprawdź czy już nie istnieje relacja
     const { data: existing } = await supabase
       .from('friendships')
       .select('*')
@@ -461,28 +450,55 @@ export default function MapaMobilePage() {
   };
 
   const saveUserSettings = async () => {
-    setIsSavingSettings(true);
-    let finalAvatarUrl = userAvatar;
+    const cleanNick = tempNick.trim();
+    if (!cleanNick) {
+      alert("Nick nie może być pusty!");
+      return;
+    }
 
+    setIsSavingSettings(true);
+    let deviceId = localStorage.getItem('spot_device_id');
+    if (!deviceId) {
+      deviceId = 'dev-' + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem('spot_device_id', deviceId);
+    }
+
+    // SPRAWDZENIE UNIKALNOŚCI PRZY ZMIANIE NICKU
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('*')
+      .ilike('nick', cleanNick)
+      .maybeSingle();
+
+    if (existingUser && existingUser.device_id !== deviceId) {
+      setIsSavingSettings(false);
+      alert(`Przepraszamy, nick "@${cleanNick}" jest już zajęty przez innego użytkownika!`);
+      return;
+    }
+
+    let finalAvatarUrl = userAvatar;
     if (tempAvatarFile) {
       const fileExt = tempAvatarFile.name.split('.').pop();
       const fileName = `avatar-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
       const filePath = `public/${fileName}`;
 
       const { error: uploadError } = await supabase.storage.from('spot-images').upload(filePath, tempAvatarFile);
-      
       if (!uploadError) {
         const { data } = supabase.storage.from('spot-images').getPublicUrl(filePath);
         if (data?.publicUrl) finalAvatarUrl = data.publicUrl;
       }
     }
 
-    const finalNick = tempNick.trim() || 'Anonim';
-    setUserNick(finalNick);
+    await supabase.from('users').upsert(
+      { device_id: deviceId, nick: cleanNick },
+      { onConflict: 'device_id' }
+    );
+
+    setUserNick(cleanNick);
     setShareLocation(tempShare);
     setVisibilityRadius(tempRadius);
     
-    localStorage.setItem('spot_user_nick', finalNick);
+    localStorage.setItem('spot_user_nick', cleanNick);
     localStorage.setItem('spot_user_shared', tempShare ? 'true' : 'false');
     localStorage.setItem('spot_user_radius', tempRadius.toString());
     
@@ -491,7 +507,7 @@ export default function MapaMobilePage() {
       localStorage.setItem('spot_user_avatar', finalAvatarUrl);
     }
 
-    fetchFriendships(finalNick);
+    fetchFriendships(cleanNick);
     setIsSavingSettings(false);
     setIsSettingsOpen(false);
   };
@@ -693,7 +709,6 @@ export default function MapaMobilePage() {
             mouseEvents={true}
             onClick={handleMapClick}
           >
-            {/* INNI UŻYTKOWNICY NA ŻYWO (Z WYRÓŻNIENIEM ZNAJOMYCH) */}
             {userLocation && liveUsers.map((liveUser) => {
               const distance = getDistanceInMeters(userLocation[0], userLocation[1], liveUser.lat, liveUser.lng);
               const userRadius = liveUser.radius || 100;
@@ -728,7 +743,6 @@ export default function MapaMobilePage() {
               );
             })}
 
-            {/* TWOJA LOKALIZACJA */}
             {userLocation && (
               <Overlay anchor={userLocation} offset={userAvatar ? [16, 16] : [12, 12]}>
                 <div className={`relative flex items-center justify-center pointer-events-none ${userAvatar ? 'w-8 h-8' : 'w-6 h-6'}`}>
@@ -751,7 +765,6 @@ export default function MapaMobilePage() {
               </Overlay>
             )}
 
-            {/* SPOTY */}
             {spots.map((spot) => (
               <Marker
                 key={spot.id}
@@ -767,7 +780,6 @@ export default function MapaMobilePage() {
               />
             ))}
 
-            {/* DYMKI AKTYWNYCH EVENTÓW */}
             {activeEventsList.map((eventItem) => {
               const spot = spots.find((s) => s.id === eventItem.spot_id);
               if (!spot) return null;
@@ -1309,7 +1321,6 @@ export default function MapaMobilePage() {
         </div>
       )}
 
-      {/* --- MODAL USTAWIENIA / ZNAJOMI --- */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[28px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -1325,7 +1336,6 @@ export default function MapaMobilePage() {
               </button>
             </div>
 
-            {/* Zakładki */}
             <div className="flex bg-slate-950 p-1 rounded-xl mb-5 border border-slate-800">
               <button
                 onClick={() => setSettingsTab('profile')}
@@ -1365,7 +1375,7 @@ export default function MapaMobilePage() {
 
                 <div className="mb-4">
                   <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                    Twój obecny Nick
+                    Twój unikalny Nick
                   </label>
                   <input 
                     type="text" 
@@ -1429,7 +1439,6 @@ export default function MapaMobilePage() {
               </div>
             ) : (
               <div className="animate-in fade-in duration-200 flex flex-col gap-4 max-h-[60vh] overflow-y-auto">
-                {/* WYSYŁANIE ZAPROSZENIA */}
                 <form onSubmit={sendFriendRequest} className="flex gap-2">
                   <input
                     type="text"
@@ -1443,7 +1452,6 @@ export default function MapaMobilePage() {
                   </button>
                 </form>
 
-                {/* OCZEKUJĄCE ZAPROSZENIA */}
                 {pendingRequests.length > 0 && (
                   <div>
                     <p className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider mb-2">
@@ -1473,7 +1481,6 @@ export default function MapaMobilePage() {
                   </div>
                 )}
 
-                {/* LISTA ZNAJOMYCH */}
                 <div>
                   <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
                     Twoi znajomi ({friendsList.length})
@@ -1506,10 +1513,10 @@ export default function MapaMobilePage() {
       )}
 
       {fullScreenImage && (
-        <div className="fixed inset-0 z-[60] bg-black/95 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[65] bg-black/95 flex items-center justify-center p-4">
           <button 
             onClick={() => setFullScreenImage(null)}
-            className="absolute top-6 right-6 text-white bg-slate-800/50 p-2 rounded-full border border-slate-700 z-[60] w-10 h-10 flex items-center justify-center font-bold"
+            className="absolute top-6 right-6 text-white bg-slate-800/50 p-2 rounded-full border border-slate-700 z-[65] w-10 h-10 flex items-center justify-center font-bold"
           >
             ✕
           </button>

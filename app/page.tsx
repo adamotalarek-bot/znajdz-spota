@@ -14,7 +14,6 @@ export default function SetupPage() {
   const [shareLocation, setShareLocation] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Sprawdzamy, czy użytkownik był już w aplikacji
   useEffect(() => {
     const savedNick = localStorage.getItem('spot_user_nick');
     if (savedNick) {
@@ -34,30 +33,54 @@ export default function SetupPage() {
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nick.trim()) {
-      alert("Podaj chociaż swój nick!");
+    const cleanNick = nick.trim();
+    if (!cleanNick) {
+      alert("Podaj swój nick!");
       return;
     }
 
     setLoading(true);
-    let finalAvatarUrl = '';
 
-    // Jeśli wybrano zdjęcie, wgrywamy do Supabase
+    // Pobieramy lub tworzymy unikalny identyfikator urządzenia
+    let deviceId = localStorage.getItem('spot_device_id');
+    if (!deviceId) {
+      deviceId = 'dev-' + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem('spot_device_id', deviceId);
+    }
+
+    // SPRAWDZENIE UNIKALNOŚCI NICKU W BAZIE
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('*')
+      .ilike('nick', cleanNick)
+      .maybeSingle();
+
+    if (existingUser && existingUser.device_id !== deviceId) {
+      setLoading(false);
+      alert(`Przepraszamy, nick "@${cleanNick}" jest już zajęty przez innego użytkownika! Wybierz inny.`);
+      return;
+    }
+
+    let finalAvatarUrl = '';
     if (avatarFile) {
       const fileExt = avatarFile.name.split('.').pop();
       const fileName = `avatar-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
       const filePath = `public/${fileName}`;
 
       const { error: uploadError } = await supabase.storage.from('spot-images').upload(filePath, avatarFile);
-      
       if (!uploadError) {
         const { data } = supabase.storage.from('spot-images').getPublicUrl(filePath);
         if (data?.publicUrl) finalAvatarUrl = data.publicUrl;
       }
     }
 
-    // Zapisujemy wszystko w pamięci urządzenia
-    localStorage.setItem('spot_user_nick', nick.trim());
+    // Zapisujemy lub aktualizujemy nick w tabeli unikalnych użytkowników
+    await supabase.from('users').upsert(
+      { device_id: deviceId, nick: cleanNick },
+      { onConflict: 'device_id' }
+    );
+
+    localStorage.setItem('spot_user_nick', cleanNick);
     if (finalAvatarUrl) localStorage.setItem('spot_user_avatar', finalAvatarUrl);
     localStorage.setItem('spot_user_shared', shareLocation ? 'true' : 'false');
 
@@ -85,7 +108,6 @@ export default function SetupPage() {
         </div>
 
         <form onSubmit={handleStart} className="flex flex-col gap-5">
-          {/* AVATAR */}
           <div className="flex flex-col items-center">
             <div className="relative w-24 h-24 rounded-full border-2 border-dashed border-slate-600 bg-slate-800/50 flex items-center justify-center overflow-hidden mb-2 transition-all hover:border-blue-500">
               {avatarUrl ? (
@@ -107,10 +129,9 @@ export default function SetupPage() {
             </p>
           </div>
 
-          {/* NICK */}
           <div>
             <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
-              Twój Nick
+              Twój unikalny Nick
             </label>
             <input 
               type="text" 
@@ -122,7 +143,6 @@ export default function SetupPage() {
             />
           </div>
 
-          {/* TOGGLE WIDOCZNOŚCI */}
           <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3">
             <div className="pt-0.5">
               <label className="relative inline-flex items-center cursor-pointer">
@@ -138,7 +158,7 @@ export default function SetupPage() {
             <div>
               <p className="text-xs font-bold text-slate-200">Tryb widmo / Widoczność</p>
               <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
-                Gdy to włączysz, inni użytkownicy w promieniu <strong className="text-emerald-400">100 metrów</strong> zobaczą Twoją ikonę na żywo. Możesz to zmienić w ustawieniach.
+                Gdy to włączysz, inni użytkownicy w wybranym promieniu zobaczą Twoją ikonę na żywo.
               </p>
             </div>
           </div>
@@ -148,7 +168,7 @@ export default function SetupPage() {
             disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold py-4 rounded-xl text-sm shadow-lg shadow-blue-600/30 transition-all active:scale-95 mt-2"
           >
-            {loading ? 'Przygotowywanie mapy...' : 'Wejdź na mapę 🚀'}
+            {loading ? 'Sprawdzanie nicku...' : 'Wejdź na mapę 🚀'}
           </button>
         </form>
       </div>
