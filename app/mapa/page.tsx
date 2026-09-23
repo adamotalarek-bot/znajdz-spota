@@ -24,6 +24,17 @@ interface Review {
   created_at: string;
 }
 
+// NOWE: Event na spocie
+interface EventItem {
+  id: number;
+  spot_id: number;
+  title: string;
+  time: string;
+  creator_nick: string;
+  participants: string[];
+  created_at: string;
+}
+
 // Dodano "radius", aby inni wiedzieli, z jakiej odległości chcesz być widoczny
 interface LiveUser {
   id: string;
@@ -65,18 +76,25 @@ function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: num
 
 export default function MapaMobilePage() {
   const [spots, setSpots] = useState<Spot[]>([]);
-  
+  const [events, setEvents] = useState<EventItem[]>([]); // NOWE
+
   // Stany paneli
   const [selectedAnchor, setSelectedAnchor] = useState<[number, number] | null>(null);
   const [previewSpot, setPreviewSpot] = useState<Spot | null>(null);
   const [activeSpot, setActiveSpot] = useState<Spot | null>(null);   
   const [reviewSpot, setReviewSpot] = useState<Spot | null>(null);   
+  const [creatingEventSpot, setCreatingEventSpot] = useState<Spot | null>(null); // NOWE
+  const [activeEvent, setActiveEvent] = useState<EventItem | null>(null); // NOWE
   
   // Zmienne Formularzy
   const [spotName, setSpotName] = useState('');
   const [selectedVibes, setSelectedVibes] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // NOWE: Formularz eventu
+  const [eventTitle, setEventTitle] = useState('');
+  const [eventTime, setEventTime] = useState('');
   
   // --- USTAWIENIA KONTA ---
   const [userNick, setUserNick] = useState<string>('Anonim');
@@ -133,6 +151,7 @@ export default function MapaMobilePage() {
     if (savedRadius) setVisibilityRadius(parseInt(savedRadius, 10));
     
     fetchSpots();
+    fetchEvents(); // NOWE
 
     const channel = supabase.channel('live-map', {
       config: { presence: { key: sessionId.current } }
@@ -155,6 +174,31 @@ export default function MapaMobilePage() {
 
     realtimeChannel.current = channel;
 
+    // NOWE: Nasłuchiwanie na zmiany w tabeli events (żeby WSZYSCY widzieli event na żywo)
+    const eventsChannel = supabase
+      .channel('events-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'events' },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newEvent = payload.new as EventItem;
+            setEvents((prev) => {
+              if (prev.some((e) => e.id === newEvent.id)) return prev;
+              return [...prev, newEvent];
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedEvent = payload.new as EventItem;
+            setEvents((prev) => prev.map((e) => (e.id === updatedEvent.id ? updatedEvent : e)));
+            setActiveEvent((prev) => (prev && prev.id === updatedEvent.id ? updatedEvent : prev));
+          } else if (payload.eventType === 'DELETE') {
+            const oldEvent = payload.old as EventItem;
+            setEvents((prev) => prev.filter((e) => e.id !== oldEvent.id));
+          }
+        }
+      )
+      .subscribe();
+
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
@@ -176,8 +220,14 @@ export default function MapaMobilePage() {
       return () => {
         navigator.geolocation.clearWatch(watchId);
         channel.unsubscribe();
+        eventsChannel.unsubscribe(); // NOWE
       };
     }
+
+    return () => {
+      channel.unsubscribe();
+      eventsChannel.unsubscribe(); // NOWE
+    };
   }, []);
 
   // Aktualizacja statusu na żywo (teraz wysyłamy też nasz radius!)
@@ -213,6 +263,14 @@ export default function MapaMobilePage() {
     }
   };
 
+  // NOWE
+  const fetchEvents = async () => {
+    const { data, error } = await supabase.from('events').select('*');
+    if (!error && data) {
+      setEvents(data as EventItem[]);
+    }
+  };
+
   const fetchReviews = async (spotId: number) => {
     setLoadingReviews(true);
     const { data, error } = await supabase
@@ -232,6 +290,8 @@ export default function MapaMobilePage() {
     setSelectedAnchor(null);
     setReviewSpot(null);
     setPreviewSpot(null);
+    setCreatingEventSpot(null); // NOWE
+    setActiveEvent(null); // NOWE
   };
 
   const handleMapClick = ({ latLng }: { latLng: [number, number] }) => {
@@ -392,13 +452,109 @@ export default function MapaMobilePage() {
     fetchSpots();
   };
 
+  // NOWE: Tworzenie eventu na spocie
+  const handleCreateEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!creatingEventSpot || !eventTitle.trim() || !eventTime) {
+      alert("Uzupełnij godzinę i tematykę spotkania!");
+      return;
+    }
+
+    setLoading(true);
+    const newEvent = {
+      spot_id: creatingEventSpot.id,
+      title: eventTitle.trim(),
+      time: eventTime,
+      creator_nick: userNick,
+      participants: [] as string[],
+    };
+
+    const { data, error } = await supabase.from('events').insert([newEvent]).select();
+    setLoading(false);
+
+    if (error) {
+      alert(`Błąd podczas tworzenia eventu: ${error.message}`);
+      return;
+    }
+
+    if (data && data.length > 0) {
+      setEvents((prev) => [...prev, data[0] as EventItem]);
+      setEventTitle('');
+      setEventTime('');
+      closeAllPanels();
+    }
+  };
+
+  // NOWE: Dołączanie do eventu
+  const handleJoinEvent = async (event: EventItem) => {
+    if (userNick === 'Anonim') {
+      alert("Ustaw swój nick w ustawieniach (⚙️), zanim dołączysz do eventu!");
+      return;
+    }
+    if (event.participants.includes(userNick)) return;
+
+    setLoading(true);
+    const updatedParticipants = [...event.participants, userNick];
+
+    const { data, error } = await supabase
+      .from('events')
+      .update({ participants: updatedParticipants })
+      .eq('id', event.id)
+      .select();
+
+    setLoading(false);
+
+    if (error) {
+      alert(`Błąd: ${error.message}`);
+      return;
+    }
+
+    if (data && data.length > 0) {
+      const updated = data[0] as EventItem;
+      setEvents((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+      setActiveEvent(updated);
+    }
+  };
+
+  // NOWE: Rezygnacja z udziału
+  const handleLeaveEvent = async (event: EventItem) => {
+    setLoading(true);
+    const updatedParticipants = event.participants.filter((p) => p !== userNick);
+
+    const { data, error } = await supabase
+      .from('events')
+      .update({ participants: updatedParticipants })
+      .eq('id', event.id)
+      .select();
+
+    setLoading(false);
+
+    if (error) {
+      alert(`Błąd: ${error.message}`);
+      return;
+    }
+
+    if (data && data.length > 0) {
+      const updated = data[0] as EventItem;
+      setEvents((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+      setActiveEvent(updated);
+    }
+  };
+
   const getAverageRating = (spot: Spot) => {
     if (!spot.reviews || spot.reviews.length === 0) return null;
     const sum = spot.reviews.reduce((acc, curr) => acc + curr.rating, 0);
     return (sum / spot.reviews.length).toFixed(1);
   };
 
-  const isSheetOpen = activeSpot || selectedAnchor || reviewSpot || previewSpot;
+  // NOWE: helper - znajdź event dla danego spota (bierzemy najnowszy, jeśli jest kilka)
+  const getEventForSpot = (spotId: number) => {
+    const spotEvents = events.filter((e) => e.spot_id === spotId);
+    if (spotEvents.length === 0) return null;
+    return spotEvents[spotEvents.length - 1];
+  };
+
+  const isSheetOpen = activeSpot || selectedAnchor || reviewSpot || previewSpot || creatingEventSpot || activeEvent;
 
   return (
     <div className="fixed inset-0 w-full h-[100dvh] overflow-hidden bg-slate-950 font-sans select-none">
@@ -490,6 +646,36 @@ export default function MapaMobilePage() {
                 }}
               />
             ))}
+
+            {/* NOWE: DYMKI EVENTÓW NAD SPOTAMI - widzi to każdy, pulsuje */}
+            {events.map((eventItem) => {
+              const spot = spots.find((s) => s.id === eventItem.spot_id);
+              if (!spot) return null;
+
+              return (
+                <Overlay key={`event-${eventItem.id}`} anchor={[spot.lat, spot.lng]} offset={[19, 58]}>
+                  <div
+                    className="relative flex flex-col items-center pointer-events-auto cursor-pointer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeAllPanels();
+                      setActiveEvent(eventItem);
+                      setSheetHeight(50);
+                    }}
+                  >
+                    <div className="mb-1.5 bg-amber-500 text-slate-900 text-[10px] font-black px-2.5 py-1 rounded-full shadow-lg shadow-amber-500/40 whitespace-nowrap animate-bounce border border-amber-300">
+                      🎉 EVENT · {eventItem.time}
+                    </div>
+                    <div className="relative w-8 h-8 flex items-center justify-center">
+                      <div className="absolute w-full h-full bg-amber-400 rounded-full animate-ping opacity-70" />
+                      <div className="relative w-8 h-8 bg-amber-500 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-sm">
+                        🎉
+                      </div>
+                    </div>
+                  </div>
+                </Overlay>
+              );
+            })}
 
             {selectedAnchor && (
               <Marker width={42} anchor={selectedAnchor} color="#f43f5e" />
@@ -584,7 +770,9 @@ export default function MapaMobilePage() {
 
           <div className="flex-1 overflow-y-auto px-5 pb-8 scrollbar-none">
             
-            {previewSpot && (
+            {previewSpot && (() => {
+              const spotEvent = getEventForSpot(previewSpot.id); // NOWE
+              return (
               <div className="animate-in fade-in zoom-in-95 duration-200">
                 <div className="flex justify-between items-start mb-4">
                   <h3 className="text-xl font-bold text-white leading-tight flex items-center gap-2">
@@ -597,6 +785,12 @@ export default function MapaMobilePage() {
                   </h3>
                   <button onClick={closeAllPanels} className="bg-slate-800 border border-slate-700 p-1.5 rounded-full text-slate-400">✕</button>
                 </div>
+
+                {spotEvent && (
+                  <div className="mb-3 bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs px-3 py-2 rounded-xl flex items-center gap-1.5">
+                    🎉 Trwa tu event: <span className="font-bold">{spotEvent.title}</span> o {spotEvent.time}
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 gap-2.5">
                   <button
@@ -627,9 +821,37 @@ export default function MapaMobilePage() {
                   >
                     <span>⭐ Oceń spot</span><span>→</span>
                   </button>
+
+                  {/* NOWE: przycisk eventu - inny wariant jeśli event już istnieje */}
+                  {spotEvent ? (
+                    <button
+                      onClick={() => {
+                        setActiveEvent(spotEvent);
+                        setPreviewSpot(null);
+                        setSheetHeight(50);
+                      }}
+                      className="w-full bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold py-3.5 px-4 rounded-xl text-sm flex justify-between shadow-lg shadow-amber-500/20"
+                    >
+                      <span>🎉 Zobacz event</span><span>→</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setCreatingEventSpot(previewSpot);
+                        setPreviewSpot(null);
+                        setSheetHeight(75);
+                        setEventTitle('');
+                        setEventTime('');
+                      }}
+                      className="w-full bg-amber-600/15 hover:bg-amber-600/25 text-amber-400 font-semibold py-3.5 px-4 rounded-xl text-sm border border-amber-500/30 flex justify-between transition-all"
+                    >
+                      <span>🎉 Stwórz event</span><span>→</span>
+                    </button>
+                  )}
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {activeSpot && (
               <div className="animate-in fade-in zoom-in-95 duration-200">
@@ -825,6 +1047,142 @@ export default function MapaMobilePage() {
                 </button>
               </form>
             )}
+
+            {/* NOWE: Formularz tworzenia eventu */}
+            {creatingEventSpot && (
+              <form onSubmit={handleCreateEvent} className="flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-200">
+                <div className="flex justify-between items-center mb-1">
+                  <h2 className="font-bold text-lg text-white flex items-center gap-2">
+                    🎉 Nowy event: {creatingEventSpot.name}
+                  </h2>
+                  <button type="button" onClick={closeAllPanels} className="bg-slate-800 border border-slate-700 p-1.5 rounded-full text-slate-400">✕</button>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Godzina spotkania</label>
+                  <input
+                    type="time"
+                    value={eventTime}
+                    onChange={(e) => setEventTime(e.target.value)}
+                    className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-amber-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Tematyka spotkania</label>
+                  <input
+                    type="text"
+                    value={eventTitle}
+                    onChange={(e) => setEventTitle(e.target.value)}
+                    placeholder="np. Ognisko integracyjne 🔥"
+                    className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-amber-500"
+                    required
+                  />
+                </div>
+
+                <div className="text-xs text-slate-500 bg-slate-800/40 border border-slate-800 rounded-xl p-3">
+                  Event pojawi się na mapie jako pulsująca pinezka widoczna dla wszystkich użytkowników.
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-900 font-bold py-3.5 rounded-xl text-sm mt-2 shadow-lg shadow-amber-500/20"
+                >
+                  {loading ? 'Tworzenie...' : 'Stwórz event 🚀'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreviewSpot(creatingEventSpot);
+                    setCreatingEventSpot(null);
+                    setSheetHeight(40);
+                  }}
+                  className="w-full mt-1 bg-transparent text-slate-400 font-semibold py-2 px-4 rounded-xl text-sm"
+                >
+                  Wróć
+                </button>
+              </form>
+            )}
+
+            {/* NOWE: Panel szczegółów eventu (widoczny dla każdego) */}
+            {activeEvent && (() => {
+              const eventSpot = spots.find((s) => s.id === activeEvent.spot_id);
+              const isJoined = activeEvent.participants.includes(userNick);
+              return (
+                <div className="animate-in fade-in zoom-in-95 duration-200">
+                  <div className="flex justify-between items-start mb-4">
+                    <h2 className="text-xl font-bold text-white leading-tight flex items-center gap-2">
+                      🎉 {activeEvent.title}
+                    </h2>
+                    <button onClick={closeAllPanels} className="bg-slate-800 border border-slate-700 p-1.5 rounded-full text-slate-400">✕</button>
+                  </div>
+
+                  {eventSpot && (
+                    <p className="text-xs text-slate-500 mb-4 -mt-2">📍 {eventSpot.name}</p>
+                  )}
+
+                  <div className="flex flex-col gap-2.5 mb-5">
+                    <div className="flex items-center justify-between bg-slate-800/50 border border-slate-800 rounded-xl px-4 py-3">
+                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">🕒 Godzina</span>
+                      <span className="text-sm font-bold text-amber-400">{activeEvent.time}</span>
+                    </div>
+                    <div className="flex items-center justify-between bg-slate-800/50 border border-slate-800 rounded-xl px-4 py-3">
+                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">👤 Organizator</span>
+                      <span className="text-sm font-bold text-slate-200">@{activeEvent.creator_nick}</span>
+                    </div>
+                    <div className="flex items-center justify-between bg-slate-800/50 border border-slate-800 rounded-xl px-4 py-3">
+                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">🙋 Uczestnicy</span>
+                      <span className="text-sm font-bold text-emerald-400">{activeEvent.participants.length}</span>
+                    </div>
+                  </div>
+
+                  {activeEvent.participants.length > 0 && (
+                    <div className="mb-5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Kto idzie</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {activeEvent.participants.map((nick, idx) => (
+                          <span key={idx} className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
+                            @{nick}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {isJoined ? (
+                    <button
+                      onClick={() => handleLeaveEvent(activeEvent)}
+                      disabled={loading}
+                      className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-emerald-400 font-bold py-3.5 rounded-xl text-sm border border-emerald-500/30 transition-all"
+                    >
+                      {loading ? 'Zapisywanie...' : '✅ Bierzesz udział (kliknij, aby zrezygnować)'}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleJoinEvent(activeEvent)}
+                      disabled={loading}
+                      className="w-full bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-900 font-bold py-3.5 rounded-xl text-sm shadow-lg shadow-amber-500/20 transition-all"
+                    >
+                      {loading ? 'Zapisywanie...' : '🙋 Wezmę udział'}
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      if (eventSpot) setPreviewSpot(eventSpot);
+                      setActiveEvent(null);
+                      setSheetHeight(40);
+                    }}
+                    className="w-full mt-2.5 bg-transparent text-slate-400 font-semibold py-2 px-4 rounded-xl text-sm"
+                  >
+                    ← Wróć do spota
+                  </button>
+                </div>
+              );
+            })()}
 
           </div>
         </div>
