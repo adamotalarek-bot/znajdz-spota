@@ -4,7 +4,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Map, Marker, Overlay } from 'pigeon-maps';
 import { supabase } from '@/app/lib/supabase';
 
-// --- INTERFEJSY ---
 interface Spot {
   id: number;
   name: string;
@@ -42,6 +41,7 @@ interface LiveUser {
   lng: number;
   isVisible: boolean;
   radius: number; 
+  nowPlaying?: string | null; // NOWE: Tytuł piosenki ze Spotify
 }
 
 interface Friendship {
@@ -51,7 +51,6 @@ interface Friendship {
   status: 'pending' | 'accepted';
 }
 
-// NOWE: Interfejs Wiadomości
 interface ChatMessage {
   id: number;
   sender_nick: string;
@@ -103,7 +102,6 @@ export default function MapaMobilePage() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
 
-  // Stany paneli mapy
   const [selectedAnchor, setSelectedAnchor] = useState<[number, number] | null>(null);
   const [previewSpot, setPreviewSpot] = useState<Spot | null>(null);
   const [activeSpot, setActiveSpot] = useState<Spot | null>(null);   
@@ -111,17 +109,14 @@ export default function MapaMobilePage() {
   const [creatingEventSpot, setCreatingEventSpot] = useState<Spot | null>(null);
   const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
   
-  // Zmienne Formularzy Spota
   const [spotName, setSpotName] = useState('');
   const [selectedVibes, setSelectedVibes] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Formularz eventu
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('');
   
-  // Ustawienia konta i znajomi
   const [userNick, setUserNick] = useState<string>('Anonim');
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [shareLocation, setShareLocation] = useState(false);
@@ -136,11 +131,14 @@ export default function MapaMobilePage() {
   const [tempAvatarUrl, setTempAvatarUrl] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
+  // NOWE: Stan muzyki ze Spotify
+  const [currentSong, setCurrentSong] = useState<string | null>(null);
+  const [isSpotifyConnected, setIsSpotifyConnected] = useState(false);
+
   const [friendInputNick, setFriendInputNick] = useState('');
   const [friendsList, setFriendsList] = useState<string[]>([]);
   const [pendingRequests, setPendingRequests] = useState<Friendship[]>([]);
   
-  // NOWE: Stany Czatu
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [activeChatFriend, setActiveChatFriend] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -156,13 +154,11 @@ export default function MapaMobilePage() {
 
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
 
-  // Stany suwaka
   const [sheetHeight, setSheetHeight] = useState<number>(40);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
 
-  // Stany GPS, Mapy i Realtime
   const [mapHeight, setMapHeight] = useState<number>(0);
   const [mapCenter, setMapCenter] = useState<[number, number]>(DEFAULT_CENTER);
   const [mapZoom, setMapZoom] = useState<number>(DEFAULT_ZOOM);
@@ -172,7 +168,6 @@ export default function MapaMobilePage() {
   const realtimeChannel = useRef<any>(null);
   const [liveUsers, setLiveUsers] = useState<LiveUser[]>([]);
 
-  // Synchronizacja refa z aktywnym znajomym (do nasłuchiwania w czasie rzeczywistym)
   useEffect(() => {
     activeChatFriendRef.current = activeChatFriend;
     if (activeChatFriend) {
@@ -180,7 +175,6 @@ export default function MapaMobilePage() {
     }
   }, [activeChatFriend, userNick]);
 
-  // Scrollowanie czatu w dół po załadowaniu nowych wiadomości
   useEffect(() => {
     chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
@@ -188,6 +182,16 @@ export default function MapaMobilePage() {
   useEffect(() => {
     setMapHeight(window.innerHeight);
     
+    // Sprawdzamy powiadomienia po powrocie ze Spotify
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('spotify_success') === 'true') {
+      setIsSpotifyConnected(true);
+      localStorage.setItem('spotify_connected', 'true');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (localStorage.getItem('spotify_connected') === 'true') {
+      setIsSpotifyConnected(true);
+    }
+
     const savedNick = localStorage.getItem('spot_user_nick');
     if (savedNick) {
       setUserNick(savedNick);
@@ -263,7 +267,6 @@ export default function MapaMobilePage() {
       )
       .subscribe();
 
-    // NOWE: Nasłuchiwanie wiadomości na żywo
     const messagesChannel = supabase
       .channel('messages-changes')
       .on(
@@ -274,7 +277,6 @@ export default function MapaMobilePage() {
           const currentNick = localStorage.getItem('spot_user_nick');
           const currentActiveFriend = activeChatFriendRef.current;
 
-          // Jeśli wiadomość dotyczy aktualnie otwartego czatu, dodaj ją do listy
           if (
             currentActiveFriend &&
             ((newMsg.sender_nick === currentNick && newMsg.receiver_nick === currentActiveFriend) ||
@@ -323,6 +325,49 @@ export default function MapaMobilePage() {
       messagesChannel.unsubscribe();
     };
   }, []);
+
+  // NOWE: Pętla sprawdzająca co 10 sekund, czego aktualnie słuchasz w Spotify
+  useEffect(() => {
+    if (!isSpotifyConnected) return;
+
+    const checkSpotify = async () => {
+      try {
+        const res = await fetch('/api/spotify/now-playing');
+        const data = await res.json();
+        if (data && data.item) {
+          const songName = `${data.item.name} – ${data.item.artists.map((a: any) => a.name).join(', ')}`;
+          setCurrentSong(songName);
+        } else {
+          setCurrentSong(null);
+        }
+      } catch (err) {
+        console.warn("Błąd pobierania ze Spotify:", err);
+      }
+    };
+
+    checkSpotify();
+    const interval = setInterval(checkSpotify, 10000); // co 10 sekund
+    return () => clearInterval(interval);
+  }, [isSpotifyConnected]);
+
+  // Aktualizacja statusu na żywo (wysyłamy też obecną piosenkę!)
+  useEffect(() => {
+    if (realtimeChannel.current && userLocation) {
+      if (shareLocation) {
+        realtimeChannel.current.track({
+          nick: userNick,
+          avatar: userAvatar,
+          lat: userLocation[0],
+          lng: userLocation[1],
+          isVisible: true,
+          radius: visibilityRadius,
+          nowPlaying: currentSong // Przesyłamy piosenkę do sieci
+        });
+      } else {
+        realtimeChannel.current.track({ isVisible: false });
+      }
+    }
+  }, [userLocation, shareLocation, userNick, userAvatar, visibilityRadius, currentSong]);
 
   const fetchFriendships = async (nick: string) => {
     const { data, error } = await supabase
@@ -428,23 +473,6 @@ export default function MapaMobilePage() {
       fetchFriendships(userNick);
     }
   };
-
-  useEffect(() => {
-    if (realtimeChannel.current && userLocation) {
-      if (shareLocation) {
-        realtimeChannel.current.track({
-          nick: userNick,
-          avatar: userAvatar,
-          lat: userLocation[0],
-          lng: userLocation[1],
-          isVisible: true,
-          radius: visibilityRadius
-        });
-      } else {
-        realtimeChannel.current.track({ isVisible: false });
-      }
-    }
-  }, [userLocation, shareLocation, userNick, userAvatar, visibilityRadius]);
 
   useEffect(() => {
     if (activeSpot) {
@@ -597,7 +625,6 @@ export default function MapaMobilePage() {
         .update({ receiver_nick: cleanNick })
         .eq('receiver_nick', oldNick);
 
-      // Aktualizacja wiadomości na nowy nick
       await supabase.from('messages').update({ sender_nick: cleanNick }).eq('sender_nick', oldNick);
       await supabase.from('messages').update({ receiver_nick: cleanNick }).eq('receiver_nick', oldNick);
     }
@@ -831,10 +858,18 @@ export default function MapaMobilePage() {
                     className="relative flex items-center justify-center w-7 h-7 pointer-events-auto group cursor-pointer"
                     onClick={(e) => {
                       e.stopPropagation();
-                      alert(`Użytkownik @${liveUser.nick} jest ok. ${Math.round(distance)} metrów od Ciebie! ${isFriend ? '⭐ (Mój znajomy)' : ''}`);
+                      alert(`Użytkownik @${liveUser.nick} jest ok. ${Math.round(distance)} metrów od Ciebie! ${isFriend ? '⭐ (Mój znajomy)' : ''} ${liveUser.nowPlaying ? `\n🎵 Słucha: ${liveUser.nowPlaying}` : ''}`);
                     }}
                   >
                     <div className={`absolute w-full h-full rounded-full animate-ping opacity-50 ${isFriend ? 'bg-amber-400' : 'bg-emerald-500'}`}></div>
+                    
+                    {/* DYMEK ZE SPOTIFY NAD UŻYTKOWNIKIEM */}
+                    {liveUser.nowPlaying && (
+                      <div className="absolute -top-7 bg-emerald-900/90 border border-emerald-500 text-emerald-300 text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-md pointer-events-none flex items-center gap-1">
+                        <span>🎵</span> {liveUser.nowPlaying}
+                      </div>
+                    )}
+
                     {liveUser.avatar ? (
                       <img 
                         src={liveUser.avatar} 
@@ -924,7 +959,6 @@ export default function MapaMobilePage() {
         )}
       </div>
 
-      {/* PRZYCISK LOKALIZACJI GPS (prawa strona) */}
       <button
         onClick={() => {
           if (userLocation) {
@@ -939,7 +973,6 @@ export default function MapaMobilePage() {
         </svg>
       </button>
 
-      {/* NOWE: PRZYCISK CZATU (lewa strona) */}
       <button
         onClick={() => {
           setIsChatOpen(true);
@@ -1441,7 +1474,7 @@ export default function MapaMobilePage() {
         </div>
       )}
 
-      {/* --- MODAL USTAWIENIA / ZNAJOMI --- */}
+      {/* --- MODAL USTAWIENIA / ZNAJOMI / SPOTIFY --- */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[28px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -1505,6 +1538,25 @@ export default function MapaMobilePage() {
                     placeholder="Podaj nowy nick..."
                     className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-blue-500 text-center"
                   />
+                </div>
+
+                {/* NOWE: Przycisk Spotify w ustawieniach */}
+                <div className="mb-4 bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xl">🎧</span>
+                    <div>
+                      <p className="text-xs font-bold text-slate-200">Spotify</p>
+                      <p className="text-[10px] text-slate-400">
+                        {isSpotifyConnected ? 'Połączono ze Spotify ✓' : 'Pokazuj czego słuchasz'}
+                      </p>
+                    </div>
+                  </div>
+                  <a
+                    href={`/api/spotify/login?nick=${encodeURIComponent(userNick)}`}
+                    className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all ${isSpotifyConnected ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
+                  >
+                    {isSpotifyConnected ? 'Połączono' : 'Połącz'}
+                  </a>
                 </div>
 
                 <div className={`bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3 ${tempShare ? 'mb-3' : 'mb-4'}`}>
@@ -1661,7 +1713,6 @@ export default function MapaMobilePage() {
 
           <div className="flex-1 overflow-y-auto bg-slate-950 relative">
             {!activeChatFriend ? (
-              // LISTA ZNAJOMYCH DO CZATOWANIA
               <div className="p-4 flex flex-col gap-3">
                 {friendsList.length > 0 ? (
                   friendsList.map((friendNick, idx) => (
@@ -1689,7 +1740,6 @@ export default function MapaMobilePage() {
                 )}
               </div>
             ) : (
-              // POKÓJ CZATOWY Z KONKRETNYM ZNAJOMYM
               <div className="flex flex-col min-h-full pb-20">
                 <div className="flex-1 p-4 flex flex-col gap-4">
                   <div className="text-center text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-2">
@@ -1712,7 +1762,6 @@ export default function MapaMobilePage() {
                   <div ref={chatMessagesEndRef} />
                 </div>
 
-                {/* PASEK WYSYŁANIA WIADOMOŚCI */}
                 <form 
                   onSubmit={handleSendMessage}
                   className="fixed bottom-0 left-0 right-0 p-3 bg-slate-900 border-t border-slate-800 flex gap-2 items-center"
