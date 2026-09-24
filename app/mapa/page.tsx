@@ -41,7 +41,7 @@ interface LiveUser {
   lng: number;
   isVisible: boolean;
   radius: number; 
-  nowPlaying?: string | null; // NOWE: Tytuł piosenki ze Spotify
+  nowPlaying?: string | null;
 }
 
 interface Friendship {
@@ -131,7 +131,6 @@ export default function MapaMobilePage() {
   const [tempAvatarUrl, setTempAvatarUrl] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
-  // NOWE: Stan muzyki ze Spotify
   const [currentSong, setCurrentSong] = useState<string | null>(null);
   const [isSpotifyConnected, setIsSpotifyConnected] = useState(false);
 
@@ -182,7 +181,6 @@ export default function MapaMobilePage() {
   useEffect(() => {
     setMapHeight(window.innerHeight);
     
-    // Sprawdzamy powiadomienia po powrocie ze Spotify
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('spotify_success') === 'true') {
       setIsSpotifyConnected(true);
@@ -326,7 +324,6 @@ export default function MapaMobilePage() {
     };
   }, []);
 
-  // NOWE: Pętla sprawdzająca co 10 sekund, czego aktualnie słuchasz w Spotify
   useEffect(() => {
     if (!isSpotifyConnected) return;
 
@@ -346,11 +343,10 @@ export default function MapaMobilePage() {
     };
 
     checkSpotify();
-    const interval = setInterval(checkSpotify, 10000); // co 10 sekund
+    const interval = setInterval(checkSpotify, 10000);
     return () => clearInterval(interval);
   }, [isSpotifyConnected]);
 
-  // Aktualizacja statusu na żywo (wysyłamy też obecną piosenkę!)
   useEffect(() => {
     if (realtimeChannel.current && userLocation) {
       if (shareLocation) {
@@ -361,7 +357,7 @@ export default function MapaMobilePage() {
           lng: userLocation[1],
           isVisible: true,
           radius: visibilityRadius,
-          nowPlaying: currentSong // Przesyłamy piosenkę do sieci
+          nowPlaying: currentSong
         });
       } else {
         realtimeChannel.current.track({ isVisible: false });
@@ -863,7 +859,6 @@ export default function MapaMobilePage() {
                   >
                     <div className={`absolute w-full h-full rounded-full animate-ping opacity-50 ${isFriend ? 'bg-amber-400' : 'bg-emerald-500'}`}></div>
                     
-                    {/* DYMEK ZE SPOTIFY NAD UŻYTKOWNIKIEM */}
                     {liveUser.nowPlaying && (
                       <div className="absolute -top-7 bg-emerald-900/90 border border-emerald-500 text-emerald-300 text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-md pointer-events-none flex items-center gap-1">
                         <span>🎵</span> {liveUser.nowPlaying}
@@ -1015,6 +1010,42 @@ export default function MapaMobilePage() {
           <span className="text-[10px] opacity-70">⚙️</span>
         </button>
       </header>
+
+      {/* POWIADOMIENIA O ZAPROSZENIACH NA GŁÓWNYM EKRANIE */}
+      {!isSheetOpen && !isSettingsOpen && !isChatOpen && pendingRequests.length > 0 && (
+        <div className="absolute top-20 left-4 right-4 z-20 flex flex-col gap-3 pointer-events-none">
+          {pendingRequests.map((req) => (
+            <div 
+              key={req.id} 
+              className="bg-slate-900/95 backdrop-blur-xl border border-amber-500/50 p-3.5 rounded-2xl shadow-2xl shadow-amber-500/20 flex justify-between items-center animate-in slide-in-from-top-4 duration-300 pointer-events-auto"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-lg shadow-inner">
+                  👤
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-amber-400 uppercase tracking-widest">Nowe zaproszenie</p>
+                  <p className="text-sm font-black text-white">@{req.sender_nick}</p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => acceptFriendRequest(req.id)}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg shadow-emerald-600/30 active:scale-95 transition-all"
+                >
+                  Przyjmij
+                </button>
+                <button 
+                  onClick={() => removeFriendship(req.id)}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs px-3 py-2 rounded-xl border border-slate-700 active:scale-95 transition-all"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {!isSheetOpen && !isSettingsOpen && !isChatOpen && (
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2.5 w-max">
@@ -1474,7 +1505,6 @@ export default function MapaMobilePage() {
         </div>
       )}
 
-      {/* --- MODAL USTAWIENIA / ZNAJOMI / SPOTIFY --- */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[28px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -1540,7 +1570,6 @@ export default function MapaMobilePage() {
                   />
                 </div>
 
-                {/* NOWE: Przycisk Spotify w ustawieniach */}
                 <div className="mb-4 bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <span className="text-xl">🎧</span>
@@ -1685,7 +1714,6 @@ export default function MapaMobilePage() {
         </div>
       )}
 
-      {/* --- MODAL CZATU ZNAJOMYCH --- */}
       {isChatOpen && (
         <div className="fixed inset-0 z-[60] bg-slate-950/95 backdrop-blur-md flex flex-col animate-in slide-in-from-bottom duration-300">
           <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/80">
