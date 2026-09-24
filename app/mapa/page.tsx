@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Map, Marker, Overlay } from 'pigeon-maps';
 import { supabase } from '@/app/lib/supabase';
 
+// --- INTERFEJSY ---
 interface Spot {
   id: number;
   name: string;
@@ -50,6 +51,15 @@ interface Friendship {
   status: 'pending' | 'accepted';
 }
 
+// NOWE: Interfejs Wiadomości
+interface ChatMessage {
+  id: number;
+  sender_nick: string;
+  receiver_nick: string;
+  content: string;
+  created_at: string;
+}
+
 const AVAILABLE_VIBES = [
   "Na piwko 🍺",
   "Na papiersoka 🚬",
@@ -93,6 +103,7 @@ export default function MapaMobilePage() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
 
+  // Stany paneli mapy
   const [selectedAnchor, setSelectedAnchor] = useState<[number, number] | null>(null);
   const [previewSpot, setPreviewSpot] = useState<Spot | null>(null);
   const [activeSpot, setActiveSpot] = useState<Spot | null>(null);   
@@ -100,14 +111,17 @@ export default function MapaMobilePage() {
   const [creatingEventSpot, setCreatingEventSpot] = useState<Spot | null>(null);
   const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
   
+  // Zmienne Formularzy Spota
   const [spotName, setSpotName] = useState('');
   const [selectedVibes, setSelectedVibes] = useState<string[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Formularz eventu
   const [eventTitle, setEventTitle] = useState('');
   const [eventTime, setEventTime] = useState('');
   
+  // Ustawienia konta i znajomi
   const [userNick, setUserNick] = useState<string>('Anonim');
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [shareLocation, setShareLocation] = useState(false);
@@ -126,6 +140,14 @@ export default function MapaMobilePage() {
   const [friendsList, setFriendsList] = useState<string[]>([]);
   const [pendingRequests, setPendingRequests] = useState<Friendship[]>([]);
   
+  // NOWE: Stany Czatu
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [activeChatFriend, setActiveChatFriend] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [newChatMessage, setNewChatMessage] = useState('');
+  const chatMessagesEndRef = useRef<HTMLDivElement>(null);
+  const activeChatFriendRef = useRef<string | null>(null);
+
   const [rating, setRating] = useState<number>(0);
   const [comment, setComment] = useState<string>('');
   
@@ -134,11 +156,13 @@ export default function MapaMobilePage() {
 
   const [fullScreenImage, setFullScreenImage] = useState<string | null>(null);
 
+  // Stany suwaka
   const [sheetHeight, setSheetHeight] = useState<number>(40);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
 
+  // Stany GPS, Mapy i Realtime
   const [mapHeight, setMapHeight] = useState<number>(0);
   const [mapCenter, setMapCenter] = useState<[number, number]>(DEFAULT_CENTER);
   const [mapZoom, setMapZoom] = useState<number>(DEFAULT_ZOOM);
@@ -147,6 +171,19 @@ export default function MapaMobilePage() {
   const sessionId = useRef(`user-${Math.random().toString(36).substring(2, 10)}`);
   const realtimeChannel = useRef<any>(null);
   const [liveUsers, setLiveUsers] = useState<LiveUser[]>([]);
+
+  // Synchronizacja refa z aktywnym znajomym (do nasłuchiwania w czasie rzeczywistym)
+  useEffect(() => {
+    activeChatFriendRef.current = activeChatFriend;
+    if (activeChatFriend) {
+      fetchChatMessages(userNick, activeChatFriend);
+    }
+  }, [activeChatFriend, userNick]);
+
+  // Scrollowanie czatu w dół po załadowaniu nowych wiadomości
+  useEffect(() => {
+    chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   useEffect(() => {
     setMapHeight(window.innerHeight);
@@ -226,6 +263,32 @@ export default function MapaMobilePage() {
       )
       .subscribe();
 
+    // NOWE: Nasłuchiwanie wiadomości na żywo
+    const messagesChannel = supabase
+      .channel('messages-changes')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          const newMsg = payload.new as ChatMessage;
+          const currentNick = localStorage.getItem('spot_user_nick');
+          const currentActiveFriend = activeChatFriendRef.current;
+
+          // Jeśli wiadomość dotyczy aktualnie otwartego czatu, dodaj ją do listy
+          if (
+            currentActiveFriend &&
+            ((newMsg.sender_nick === currentNick && newMsg.receiver_nick === currentActiveFriend) ||
+             (newMsg.receiver_nick === currentNick && newMsg.sender_nick === currentActiveFriend))
+          ) {
+            setChatMessages((prev) => {
+              if (prev.some(m => m.id === newMsg.id)) return prev;
+              return [...prev, newMsg];
+            });
+          }
+        }
+      )
+      .subscribe();
+
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
@@ -249,6 +312,7 @@ export default function MapaMobilePage() {
         channel.unsubscribe();
         eventsChannel.unsubscribe();
         friendshipsChannel.unsubscribe();
+        messagesChannel.unsubscribe();
       };
     }
 
@@ -256,6 +320,7 @@ export default function MapaMobilePage() {
       channel.unsubscribe();
       eventsChannel.unsubscribe();
       friendshipsChannel.unsubscribe();
+      messagesChannel.unsubscribe();
     };
   }, []);
 
@@ -281,6 +346,32 @@ export default function MapaMobilePage() {
       setFriendsList(accepted);
       setPendingRequests(pending);
     }
+  };
+
+  const fetchChatMessages = async (me: string, friend: string) => {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .or(`and(sender_nick.eq.${me},receiver_nick.eq.${friend}),and(sender_nick.eq.${friend},receiver_nick.eq.${me})`)
+      .order('created_at', { ascending: true });
+
+    if (!error && data) {
+      setChatMessages(data as ChatMessage[]);
+    }
+  };
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newChatMessage.trim() || !activeChatFriend) return;
+
+    const msg = {
+      sender_nick: userNick,
+      receiver_nick: activeChatFriend,
+      content: newChatMessage.trim(),
+    };
+
+    setNewChatMessage('');
+    await supabase.from('messages').insert([msg]);
   };
 
   const sendFriendRequest = async (e: React.FormEvent) => {
@@ -463,7 +554,6 @@ export default function MapaMobilePage() {
       localStorage.setItem('spot_device_id', deviceId);
     }
 
-    // SPRAWDZENIE UNIKALNOŚCI PRZY ZMIANIE NICKU
     const { data: existingUser } = await supabase
       .from('users')
       .select('*')
@@ -475,6 +565,8 @@ export default function MapaMobilePage() {
       alert(`Przepraszamy, nick "@${cleanNick}" jest już zajęty przez innego użytkownika!`);
       return;
     }
+
+    const oldNick = userNick;
 
     let finalAvatarUrl = userAvatar;
     if (tempAvatarFile) {
@@ -493,6 +585,22 @@ export default function MapaMobilePage() {
       { device_id: deviceId, nick: cleanNick },
       { onConflict: 'device_id' }
     );
+
+    if (oldNick && oldNick !== cleanNick && oldNick !== 'Anonim') {
+      await supabase
+        .from('friendships')
+        .update({ sender_nick: cleanNick })
+        .eq('sender_nick', oldNick);
+
+      await supabase
+        .from('friendships')
+        .update({ receiver_nick: cleanNick })
+        .eq('receiver_nick', oldNick);
+
+      // Aktualizacja wiadomości na nowy nick
+      await supabase.from('messages').update({ sender_nick: cleanNick }).eq('sender_nick', oldNick);
+      await supabase.from('messages').update({ receiver_nick: cleanNick }).eq('receiver_nick', oldNick);
+    }
 
     setUserNick(cleanNick);
     setShareLocation(tempShare);
@@ -816,6 +924,7 @@ export default function MapaMobilePage() {
         )}
       </div>
 
+      {/* PRZYCISK LOKALIZACJI GPS (prawa strona) */}
       <button
         onClick={() => {
           if (userLocation) {
@@ -828,6 +937,17 @@ export default function MapaMobilePage() {
         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={shareLocation ? "text-emerald-400" : "text-blue-400"}>
           <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
         </svg>
+      </button>
+
+      {/* NOWE: PRZYCISK CZATU (lewa strona) */}
+      <button
+        onClick={() => {
+          setIsChatOpen(true);
+          closeAllPanels();
+        }}
+        className={`absolute left-4 z-20 w-12 h-12 bg-blue-600 border border-blue-500 text-white rounded-full shadow-lg shadow-blue-600/30 flex items-center justify-center active:scale-95 transition-all duration-300 ${isSheetOpen ? 'bottom-[35vh]' : 'bottom-32'}`}
+      >
+        <span className="text-xl">💬</span>
       </button>
 
       <header className="absolute top-4 left-4 right-4 z-20 flex justify-between items-center pointer-events-none">
@@ -863,7 +983,7 @@ export default function MapaMobilePage() {
         </button>
       </header>
 
-      {!isSheetOpen && !isSettingsOpen && (
+      {!isSheetOpen && !isSettingsOpen && !isChatOpen && (
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2.5 w-max">
           {userLocation ? (
             <button
@@ -1321,6 +1441,7 @@ export default function MapaMobilePage() {
         </div>
       )}
 
+      {/* --- MODAL USTAWIENIA / ZNAJOMI --- */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[28px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -1512,11 +1633,116 @@ export default function MapaMobilePage() {
         </div>
       )}
 
+      {/* --- MODAL CZATU ZNAJOMYCH --- */}
+      {isChatOpen && (
+        <div className="fixed inset-0 z-[60] bg-slate-950/95 backdrop-blur-md flex flex-col animate-in slide-in-from-bottom duration-300">
+          <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/80">
+            {activeChatFriend ? (
+              <button 
+                onClick={() => setActiveChatFriend(null)}
+                className="text-slate-400 hover:text-white font-bold text-sm flex items-center gap-2"
+              >
+                <span>←</span> Wróć do listy
+              </button>
+            ) : (
+              <h2 className="text-xl font-black text-white">💬 Twoje czaty</h2>
+            )}
+
+            <button 
+              onClick={() => {
+                setIsChatOpen(false);
+                setActiveChatFriend(null);
+              }}
+              className="bg-slate-800 border border-slate-700 w-8 h-8 rounded-full text-slate-400 hover:text-white flex items-center justify-center"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto bg-slate-950 relative">
+            {!activeChatFriend ? (
+              // LISTA ZNAJOMYCH DO CZATOWANIA
+              <div className="p-4 flex flex-col gap-3">
+                {friendsList.length > 0 ? (
+                  friendsList.map((friendNick, idx) => (
+                    <div 
+                      key={idx} 
+                      onClick={() => setActiveChatFriend(friendNick)}
+                      className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex justify-between items-center cursor-pointer hover:border-blue-500 transition-all active:scale-[0.98]"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-slate-800 rounded-full border border-slate-700 flex items-center justify-center text-lg shadow-inner">
+                          👤
+                        </div>
+                        <div>
+                          <span className="text-sm font-bold text-white">@{friendNick}</span>
+                          <p className="text-[10px] text-emerald-400 mt-0.5">Kliknij, aby otworzyć czat</p>
+                        </div>
+                      </div>
+                      <span className="text-blue-500">→</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-10 text-slate-500 text-sm">
+                    Brak znajomych. Dodaj ich w ustawieniach (⚙️), by móc czatować!
+                  </div>
+                )}
+              </div>
+            ) : (
+              // POKÓJ CZATOWY Z KONKRETNYM ZNAJOMYM
+              <div className="flex flex-col min-h-full pb-20">
+                <div className="flex-1 p-4 flex flex-col gap-4">
+                  <div className="text-center text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-2">
+                    Rozmowa z @{activeChatFriend}
+                  </div>
+                  
+                  {chatMessages.map((msg, idx) => {
+                    const isMe = msg.sender_nick === userNick;
+                    return (
+                      <div key={idx} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                        <div className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm ${isMe ? 'bg-blue-600 text-white rounded-br-none shadow-blue-600/20 shadow-lg' : 'bg-slate-800 border border-slate-700 text-slate-200 rounded-bl-none shadow-md'}`}>
+                          {msg.content}
+                        </div>
+                        <span className="text-[9px] text-slate-500 mt-1 px-1">
+                          {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <div ref={chatMessagesEndRef} />
+                </div>
+
+                {/* PASEK WYSYŁANIA WIADOMOŚCI */}
+                <form 
+                  onSubmit={handleSendMessage}
+                  className="fixed bottom-0 left-0 right-0 p-3 bg-slate-900 border-t border-slate-800 flex gap-2 items-center"
+                >
+                  <input
+                    type="text"
+                    value={newChatMessage}
+                    onChange={(e) => setNewChatMessage(e.target.value)}
+                    placeholder="Napisz wiadomość..."
+                    className="flex-1 p-3.5 bg-slate-950 border border-slate-700 rounded-2xl text-white text-sm outline-none focus:border-blue-500"
+                  />
+                  <button 
+                    type="submit" 
+                    disabled={!newChatMessage.trim()}
+                    className="bg-blue-600 disabled:bg-slate-800 text-white font-bold p-3.5 w-12 h-12 rounded-full shadow-lg shadow-blue-600/30 flex items-center justify-center transition-all active:scale-95"
+                  >
+                    ➤
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {fullScreenImage && (
-        <div className="fixed inset-0 z-[65] bg-black/95 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[70] bg-black/95 flex items-center justify-center p-4">
           <button 
             onClick={() => setFullScreenImage(null)}
-            className="absolute top-6 right-6 text-white bg-slate-800/50 p-2 rounded-full border border-slate-700 z-[65] w-10 h-10 flex items-center justify-center font-bold"
+            className="absolute top-6 right-6 text-white bg-slate-800/50 p-2 rounded-full border border-slate-700 z-[70] w-10 h-10 flex items-center justify-center font-bold"
           >
             ✕
           </button>
