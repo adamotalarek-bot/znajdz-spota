@@ -83,6 +83,15 @@ const AVAILABLE_VIBES = [
 const DEFAULT_CENTER: [number, number] = [52.2297, 21.0122];
 const DEFAULT_ZOOM = 12;
 
+// KONFIGURACJA REKLAM NAGRADZANYCH (Rewarded Ads)
+// To na razie "atrapa" symulująca oglądanie reklamy (odliczanie czasu).
+// Docelowo w miejscu oznaczonym komentarzem TODO w handleWatchAd podłącz prawdziwy SDK
+// (np. Google AdSense Rewarded Web, Monetag, Adsterra) i wywołaj finishAdReward()
+// dopiero w callbacku tej sieci (np. onAdComplete / onReward).
+const AD_REWARD_COINS = 5;
+const AD_DURATION_SECONDS = 15;
+const AD_COOLDOWN_MS = 5 * 60 * 1000; // 5 minut przerwy między reklamami
+
 function getDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371e3;
   const rad = Math.PI / 180;
@@ -140,6 +149,11 @@ export default function MapaMobilePage() {
   // STANY DLA EKONOMII I VIP
   const [userCoins, setUserCoins] = useState<number>(0);
   const [hasVipFrame, setHasVipFrame] = useState<boolean>(false);
+
+  // STANY DLA REKLAM NAGRADZANYCH
+  const [isWatchingAd, setIsWatchingAd] = useState(false);
+  const [adCountdown, setAdCountdown] = useState(AD_DURATION_SECONDS);
+  const [lastAdWatchedAt, setLastAdWatchedAt] = useState<number>(0);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'profile' | 'friends' | 'store'>('profile');
@@ -224,6 +238,9 @@ export default function MapaMobilePage() {
     
     const savedRadius = localStorage.getItem('spot_user_radius');
     if (savedRadius) setVisibilityRadius(parseInt(savedRadius, 10));
+
+    const savedLastAd = localStorage.getItem('spot_last_ad_watched');
+    if (savedLastAd) setLastAdWatchedAt(parseInt(savedLastAd, 10));
     
     fetchSpots();
     fetchEvents();
@@ -405,6 +422,20 @@ export default function MapaMobilePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSong, hasVipFrame, userAvatar, liveUsers]);
 
+  // ODLICZANIE CZASU TRWANIA REKLAMY (atrapa, do podmiany na callback prawdziwego SDK)
+  useEffect(() => {
+    if (!isWatchingAd) return;
+
+    if (adCountdown <= 0) {
+      finishAdReward();
+      return;
+    }
+
+    const timer = setTimeout(() => setAdCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWatchingAd, adCountdown]);
+
   // FUNKCJE SKLEPU I PROFILU
   const fetchUserProfile = async (nick: string) => {
     const { data } = await supabase
@@ -458,6 +489,49 @@ export default function MapaMobilePage() {
       alert('Gratulacje! Od teraz masz złotą ramkę VIP na mapie! 🎉');
     } else {
       alert('Błąd transakcji.');
+    }
+  };
+
+  // Uruchamia "oglądanie" reklamy (na razie atrapa z licznikiem)
+  const handleWatchAd = () => {
+    if (userNick === 'Anonim') {
+      alert('Najpierw zapisz swój profil w ustawieniach (⚙️), aby zbierać monety!');
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastAdWatchedAt;
+    if (lastAdWatchedAt > 0 && elapsed < AD_COOLDOWN_MS) {
+      const remainingMin = Math.ceil((AD_COOLDOWN_MS - elapsed) / 60000);
+      alert(`Kolejną reklamę będziesz mógł obejrzeć za ok. ${remainingMin} min. 🕒`);
+      return;
+    }
+
+    setAdCountdown(AD_DURATION_SECONDS);
+    setIsWatchingAd(true);
+
+    // TODO: Gdy podłączysz prawdziwą sieć reklamową (np. Google AdSense Rewarded Web,
+    // Monetag, Adsterra), zamiast powyższego licznika wywołaj tutaj SDK sieci
+    // i nasłuchuj JEJ callbacku zakończenia reklamy (np. onAdComplete),
+    // wywołując finishAdReward() dopiero w tym callbacku, a nie po prostym czasie.
+  };
+
+  // Wywoływana po zakończeniu reklamy (przez atrapę lub docelowo przez SDK sieci reklamowej)
+  const finishAdReward = async () => {
+    setIsWatchingAd(false);
+
+    const now = Date.now();
+    setLastAdWatchedAt(now);
+    localStorage.setItem('spot_last_ad_watched', now.toString());
+
+    const newCoins = userCoins + AD_REWARD_COINS;
+    const { error } = await supabase.from('users').update({ coins: newCoins }).eq('nick', userNick);
+
+    if (!error) {
+      setUserCoins(newCoins);
+      alert(`Dzięki za obejrzenie reklamy! Otrzymujesz ${AD_REWARD_COINS} monet 🪙`);
+    } else {
+      alert('Błąd podczas przyznawania monet. Spróbuj ponownie.');
     }
   };
 
@@ -1874,6 +1948,21 @@ export default function MapaMobilePage() {
                   </div>
                 </div>
 
+                <div className="bg-gradient-to-br from-blue-600/20 to-blue-900/10 border border-blue-500/40 p-4 rounded-xl flex justify-between items-center gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-white flex items-center gap-1.5">🎬 Obejrzyj reklamę</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 leading-tight max-w-[160px]">
+                      {AD_DURATION_SECONDS} sekund reklamy = {AD_REWARD_COINS} monet za darmo!
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleWatchAd}
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95 transition-all shadow-lg shadow-blue-600/30 whitespace-nowrap"
+                  >
+                    ▶️ Obejrzyj
+                  </button>
+                </div>
+
                 <div className="bg-slate-800/40 border border-slate-700 p-4 rounded-xl flex justify-between items-center">
                   <div>
                     <p className="text-sm font-bold text-white">Doładuj 100 Monet</p>
@@ -2167,6 +2256,37 @@ export default function MapaMobilePage() {
                 </form>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL ODTWARZANIA REKLAMY (atrapa, do podmiany na prawdziwy SDK sieci reklamowej) */}
+      {isWatchingAd && (
+        <div className="fixed inset-0 z-[80] bg-black flex flex-col items-center justify-center p-6">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 flex flex-col items-center gap-5 shadow-2xl">
+            <div className="w-full aspect-video bg-slate-800 rounded-2xl flex items-center justify-center border border-slate-700 relative overflow-hidden">
+              <span className="text-4xl animate-pulse">📺</span>
+              <div className="absolute top-3 left-3 bg-black/60 text-white text-[10px] font-bold px-2 py-1 rounded-full">
+                REKLAMA
+              </div>
+            </div>
+
+            <div className="w-full">
+              <div className="flex justify-between items-center mb-1.5">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nagroda za obejrzenie</span>
+                <span className="text-xs font-bold text-amber-400">+{AD_REWARD_COINS} 🪙</span>
+              </div>
+              <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-amber-500 transition-all duration-1000 ease-linear"
+                  style={{ width: `${((AD_DURATION_SECONDS - adCountdown) / AD_DURATION_SECONDS) * 100}%` }}
+                />
+              </div>
+            </div>
+
+            <p className="text-slate-400 text-xs text-center">
+              Nagroda za {adCountdown}s... nie zamykaj tego okna
+            </p>
           </div>
         </div>
       )}
