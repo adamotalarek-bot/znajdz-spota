@@ -42,6 +42,7 @@ interface LiveUser {
   isVisible: boolean;
   radius: number; 
   nowPlaying?: string | null;
+  hasVipFrame?: boolean; // Zmienna dla statusu VIP na żywo
 }
 
 interface Friendship {
@@ -122,8 +123,12 @@ export default function MapaMobilePage() {
   const [shareLocation, setShareLocation] = useState(false);
   const [visibilityRadius, setVisibilityRadius] = useState<number>(100);
   
+  // STANY DLA EKONOMII I VIP
+  const [userCoins, setUserCoins] = useState<number>(0);
+  const [hasVipFrame, setHasVipFrame] = useState<boolean>(false);
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'profile' | 'friends'>('profile');
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'friends' | 'store'>('profile');
   const [tempNick, setTempNick] = useState('');
   const [tempShare, setTempShare] = useState(false);
   const [tempRadius, setTempRadius] = useState(100);
@@ -194,6 +199,7 @@ export default function MapaMobilePage() {
     if (savedNick) {
       setUserNick(savedNick);
       fetchFriendships(savedNick);
+      fetchUserProfile(savedNick); // Pobieranie monet z Supabase przy starcie
     }
     
     const savedAvatar = localStorage.getItem('spot_user_avatar');
@@ -347,6 +353,7 @@ export default function MapaMobilePage() {
     return () => clearInterval(interval);
   }, [isSpotifyConnected]);
 
+  // WYSYŁANIE STATUSU VIP NA ŻYWO (dodane do zależności)
   useEffect(() => {
     if (realtimeChannel.current && userLocation) {
       if (shareLocation) {
@@ -357,13 +364,70 @@ export default function MapaMobilePage() {
           lng: userLocation[1],
           isVisible: true,
           radius: visibilityRadius,
-          nowPlaying: currentSong
+          nowPlaying: currentSong,
+          hasVipFrame: hasVipFrame // <-- Wstrzyknięcie VIP-a do transmisji
         });
       } else {
         realtimeChannel.current.track({ isVisible: false });
       }
     }
-  }, [userLocation, shareLocation, userNick, userAvatar, visibilityRadius, currentSong]);
+  }, [userLocation, shareLocation, userNick, userAvatar, visibilityRadius, currentSong, hasVipFrame]);
+
+  // FUNKCJE SKLEPU I PROFILU
+  const fetchUserProfile = async (nick: string) => {
+    const { data } = await supabase
+      .from('users')
+      .select('coins, has_vip_frame')
+      .ilike('nick', nick)
+      .maybeSingle();
+
+    if (data) {
+      setUserCoins(data.coins || 0);
+      setHasVipFrame(data.has_vip_frame || false);
+    }
+  };
+
+  const handleAddCoins = async () => {
+    if (userNick === 'Anonim') {
+      alert('Najpierw zapisz swój profil!');
+      return;
+    }
+    const newCoins = userCoins + 100;
+    const { error } = await supabase.from('users').update({ coins: newCoins }).eq('nick', userNick);
+    if (!error) {
+      setUserCoins(newCoins);
+      alert('Kupiono 100 Monet SPOTA! 🪙 (Test)');
+    }
+  };
+
+  const handleBuyVip = async () => {
+    if (userNick === 'Anonim') {
+      alert('Najpierw zapisz swój profil!');
+      return;
+    }
+    if (hasVipFrame) {
+      alert('Posiadasz już złotą ramkę VIP!');
+      return;
+    }
+    if (userCoins < 50) {
+      alert('Brakuje Ci monet! Kup je najpierw w sklepie.');
+      return;
+    }
+
+    const newCoins = userCoins - 50;
+    const { error } = await supabase
+      .from('users')
+      .update({ coins: newCoins, has_vip_frame: true })
+      .eq('nick', userNick);
+
+    if (!error) {
+      setUserCoins(newCoins);
+      setHasVipFrame(true);
+      alert('Gratulacje! Od teraz masz złotą ramkę VIP na mapie! 🎉');
+    } else {
+      alert('Błąd transakcji.');
+    }
+  };
 
   const fetchFriendships = async (nick: string) => {
     const { data, error } = await supabase
@@ -639,6 +703,7 @@ export default function MapaMobilePage() {
     }
 
     fetchFriendships(cleanNick);
+    fetchUserProfile(cleanNick); // Odśwież monety w razie zmiany nicku
     setIsSavingSettings(false);
     setIsSettingsOpen(false);
   };
@@ -847,6 +912,7 @@ export default function MapaMobilePage() {
               if (distance > userRadius) return null; 
 
               const isFriend = friendsList.includes(liveUser.nick);
+              const isVip = liveUser.hasVipFrame; // Sprawdzanie czy znajomy ma VIP
 
               return (
                 <Overlay key={liveUser.id} anchor={[liveUser.lat, liveUser.lng]} offset={[14, 14]}>
@@ -869,10 +935,10 @@ export default function MapaMobilePage() {
                       <img 
                         src={liveUser.avatar} 
                         alt={liveUser.nick}
-                        className={`relative w-7 h-7 rounded-full border-2 object-cover shadow-lg ${isFriend ? 'border-amber-400' : 'border-emerald-400'}`} 
+                        className={`relative w-7 h-7 rounded-full border-2 object-cover shadow-lg ${isVip ? 'border-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.6)]' : isFriend ? 'border-amber-400' : 'border-emerald-400'}`} 
                       />
                     ) : (
-                      <div className={`relative flex items-center justify-center w-7 h-7 border-2 border-white rounded-full shadow-md text-[9px] font-bold text-white ${isFriend ? 'bg-amber-500' : 'bg-emerald-500'}`}>
+                      <div className={`relative flex items-center justify-center w-7 h-7 border-2 border-white rounded-full shadow-md text-[9px] font-bold text-white ${isVip ? 'bg-yellow-500 shadow-[0_0_15px_rgba(250,204,21,0.6)] border-yellow-300' : isFriend ? 'bg-amber-500' : 'bg-emerald-500'}`}>
                         {liveUser.nick.substring(0, 2).toUpperCase()}
                       </div>
                     )}
@@ -894,10 +960,10 @@ export default function MapaMobilePage() {
                     <img 
                       src={userAvatar} 
                       alt="Twój awatar" 
-                      className={`relative w-8 h-8 rounded-full border-[2.5px] object-cover shadow-lg ${shareLocation ? 'border-emerald-400 shadow-emerald-500/50' : 'border-white shadow-blue-500/50'}`} 
+                      className={`relative w-8 h-8 rounded-full border-[2.5px] object-cover shadow-lg ${hasVipFrame ? 'border-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.8)]' : shareLocation ? 'border-emerald-400 shadow-emerald-500/50' : 'border-white shadow-blue-500/50'}`} 
                     />
                   ) : (
-                    <div className={`relative w-3.5 h-3.5 border-2 border-white rounded-full shadow-md ${shareLocation ? 'bg-emerald-500 shadow-emerald-500/50' : 'bg-blue-500 shadow-blue-500/50'}`}></div>
+                    <div className={`relative w-3.5 h-3.5 border-2 rounded-full shadow-md ${hasVipFrame ? 'bg-yellow-400 border-yellow-200 shadow-[0_0_15px_rgba(250,204,21,0.8)]' : shareLocation ? 'border-white bg-emerald-500 shadow-emerald-500/50' : 'border-white bg-blue-500 shadow-blue-500/50'}`}></div>
                   )}
                 </div>
               </Overlay>
@@ -979,12 +1045,28 @@ export default function MapaMobilePage() {
       </button>
 
       <header className="absolute top-4 left-4 right-4 z-20 flex justify-between items-center pointer-events-none">
-        <div className="flex items-center gap-2 bg-slate-900/95 backdrop-blur-md border border-slate-800 px-3.5 py-2 rounded-full shadow-lg pointer-events-auto">
-          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-white font-black text-sm tracking-tight">SPOTA</span>
-          <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded-full font-mono">
-            {spots.length}
-          </span>
+        
+        {/* DODANY POKAZ MONET / SKLEP */}
+        <div className="flex gap-2 pointer-events-auto">
+          <div className="flex items-center gap-2 bg-slate-900/95 backdrop-blur-md border border-slate-800 px-3.5 py-2 rounded-full shadow-lg">
+            <span className="text-white font-black text-sm tracking-tight">SPOTA</span>
+          </div>
+          <div 
+            onClick={() => {
+              setTempNick(userNick);
+              setTempAvatarUrl(userAvatar);
+              setTempShare(shareLocation);
+              setTempRadius(visibilityRadius);
+              setTempAvatarFile(null);
+              setSettingsTab('store'); // Otwieranie od razu na zakładce sklep
+              setIsSettingsOpen(true);
+              closeAllPanels();
+            }}
+            className="flex items-center gap-1.5 bg-slate-900/95 backdrop-blur-md border border-amber-500/30 px-3 py-2 rounded-full shadow-lg cursor-pointer hover:border-amber-500 transition-all active:scale-95"
+          >
+            <span className="text-sm">🪙</span>
+            <span className="text-xs font-bold text-amber-400">{userCoins}</span>
+          </div>
         </div>
         
         <button 
@@ -1001,9 +1083,9 @@ export default function MapaMobilePage() {
           className="flex items-center gap-2 bg-slate-900/95 backdrop-blur-md border border-slate-800 px-3 py-1.5 rounded-full shadow-lg pointer-events-auto active:scale-95 transition-all"
         >
           {userAvatar && (
-            <img src={userAvatar} alt="Awatar" className={`w-4 h-4 rounded-full object-cover border ${shareLocation ? 'border-emerald-400' : 'border-slate-700'}`} />
+            <img src={userAvatar} alt="Awatar" className={`w-4 h-4 rounded-full object-cover border ${hasVipFrame ? 'border-yellow-400' : shareLocation ? 'border-emerald-400' : 'border-slate-700'}`} />
           )}
-          <span className={`text-xs font-semibold ${shareLocation ? 'text-emerald-400' : 'text-slate-300'}`}>@{userNick}</span>
+          <span className={`text-xs font-semibold ${hasVipFrame ? 'text-yellow-400 drop-shadow-md' : shareLocation ? 'text-emerald-400' : 'text-slate-300'}`}>@{userNick}</span>
           {pendingRequests.length > 0 && (
             <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
           )}
@@ -1505,6 +1587,7 @@ export default function MapaMobilePage() {
         </div>
       )}
 
+      {/* MODAL USTAWIEN Z ZAKŁADKĄ SKLEPU */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[28px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
@@ -1523,25 +1606,82 @@ export default function MapaMobilePage() {
             <div className="flex bg-slate-950 p-1 rounded-xl mb-5 border border-slate-800">
               <button
                 onClick={() => setSettingsTab('profile')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${settingsTab === 'profile' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all ${settingsTab === 'profile' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
               >
                 Profil
               </button>
               <button
                 onClick={() => setSettingsTab('friends')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all relative ${settingsTab === 'friends' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all relative ${settingsTab === 'friends' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
               >
                 Znajomi
                 {pendingRequests.length > 0 && (
                   <span className="absolute top-1.5 right-2 w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
                 )}
               </button>
+              {/* NOWA ZAKŁADKA */}
+              <button
+                onClick={() => setSettingsTab('store')}
+                className={`flex-1 py-2 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1 ${settingsTab === 'store' ? 'bg-amber-500 text-slate-900' : 'text-amber-500/70 hover:text-amber-400'}`}
+              >
+                🪙 Sklep
+              </button>
             </div>
 
-            {settingsTab === 'profile' ? (
+            {settingsTab === 'store' ? (
+              <div className="animate-in fade-in duration-200 flex flex-col gap-4">
+                
+                <div className="bg-slate-950 p-5 rounded-2xl border border-amber-500/30 flex flex-col items-center justify-center text-center shadow-lg shadow-amber-500/10">
+                  <p className="text-xs font-bold text-amber-400 uppercase tracking-widest mb-1">Twój portfel SPOTA</p>
+                  <div className="text-5xl font-black text-white flex items-center gap-2 drop-shadow-md">
+                    🪙 {userCoins}
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/40 border border-slate-700 p-4 rounded-xl flex justify-between items-center">
+                  <div>
+                    <p className="text-sm font-bold text-white">Doładuj 100 Monet</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 leading-tight max-w-[150px]">Przycisk testowy – kliknij aby dodać darmowe monety!</p>
+                  </div>
+                  <button 
+                    onClick={handleAddCoins} 
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl active:scale-95 transition-all shadow-lg shadow-blue-600/30"
+                  >
+                    + Dodaj
+                  </button>
+                </div>
+
+                <div className="bg-gradient-to-br from-amber-500/20 to-yellow-600/10 border border-amber-500/50 p-5 rounded-xl flex flex-col gap-3 relative overflow-hidden mt-2">
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/20 blur-2xl rounded-full" />
+                  
+                  <div className="flex justify-between items-start z-10">
+                    <div>
+                      <p className="text-sm font-bold text-amber-400 flex items-center gap-1.5">
+                        ⭐ Złota Ramka VIP
+                      </p>
+                      <p className="text-[10px] text-slate-300 mt-1 max-w-[180px] leading-relaxed">
+                        Wyróżnij się z tłumu! Otrzymasz piękną, animowaną złotą ramkę wokół swojego awatara.
+                      </p>
+                    </div>
+                    <div className="text-lg font-black text-amber-400 bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-amber-500/30 shadow-lg shadow-amber-500/20">
+                      50 🪙
+                    </div>
+                  </div>
+                  
+                  <button 
+                    onClick={handleBuyVip}
+                    disabled={hasVipFrame}
+                    className={`w-full text-xs font-bold py-3 rounded-xl transition-all z-10 mt-1 ${hasVipFrame ? 'bg-slate-800 text-slate-500 border border-slate-700' : 'bg-amber-500 hover:bg-amber-400 text-slate-900 shadow-lg shadow-amber-500/30 active:scale-95'}`}
+                  >
+                    {hasVipFrame ? '✅ Posiadasz ten status' : 'Kup teraz za 50 monet'}
+                  </button>
+                </div>
+
+              </div>
+            ) : settingsTab === 'profile' ? (
               <div className="animate-in fade-in duration-200">
                 <div className="mb-4 flex flex-col items-center">
-                  <div className="relative w-20 h-20 mb-2 rounded-full border-2 border-slate-700 bg-slate-800 flex items-center justify-center overflow-hidden">
+                  <div className={`relative w-20 h-20 mb-2 rounded-full border-2 bg-slate-800 flex items-center justify-center overflow-hidden ${hasVipFrame ? 'border-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.6)]' : 'border-slate-700'}`}>
                     {tempAvatarUrl ? (
                       <img src={tempAvatarUrl} alt="Podgląd" className="w-full h-full object-cover" />
                     ) : (
@@ -1558,16 +1698,8 @@ export default function MapaMobilePage() {
                 </div>
 
                 <div className="mb-4">
-                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                    Twój unikalny Nick
-                  </label>
-                  <input 
-                    type="text" 
-                    value={tempNick}
-                    onChange={(e) => setTempNick(e.target.value)}
-                    placeholder="Podaj nowy nick..."
-                    className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-blue-500 text-center"
-                  />
+                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Twój unikalny Nick</label>
+                  <input type="text" value={tempNick} onChange={(e) => setTempNick(e.target.value)} placeholder="Podaj nowy nick..." className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-blue-500 text-center" />
                 </div>
 
                 <div className="mb-4 bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-center justify-between">
@@ -1575,15 +1707,10 @@ export default function MapaMobilePage() {
                     <span className="text-xl">🎧</span>
                     <div>
                       <p className="text-xs font-bold text-slate-200">Spotify</p>
-                      <p className="text-[10px] text-slate-400">
-                        {isSpotifyConnected ? 'Połączono ze Spotify ✓' : 'Pokazuj czego słuchasz'}
-                      </p>
+                      <p className="text-[10px] text-slate-400">{isSpotifyConnected ? 'Połączono ze Spotify ✓' : 'Pokazuj czego słuchasz'}</p>
                     </div>
                   </div>
-                  <a
-                    href={`/api/spotify/login?nick=${encodeURIComponent(userNick)}`}
-                    className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all ${isSpotifyConnected ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
-                  >
+                  <a href={`/api/spotify/login?nick=${encodeURIComponent(userNick)}`} className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all ${isSpotifyConnected ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}>
                     {isSpotifyConnected ? 'Połączono' : 'Połącz'}
                   </a>
                 </div>
@@ -1591,20 +1718,13 @@ export default function MapaMobilePage() {
                 <div className={`bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3 ${tempShare ? 'mb-3' : 'mb-4'}`}>
                   <div className="pt-0.5">
                     <label className="relative inline-flex items-center cursor-pointer">
-                      <input 
-                        type="checkbox" 
-                        checked={tempShare} 
-                        onChange={() => setTempShare(!tempShare)} 
-                        className="sr-only peer" 
-                      />
+                      <input type="checkbox" checked={tempShare} onChange={() => setTempShare(!tempShare)} className="sr-only peer" />
                       <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
                     </label>
                   </div>
                   <div>
                     <p className="text-xs font-bold text-slate-200">Tryb widmo / Widoczność</p>
-                    <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
-                      Zaznacz, aby inni użytkownicy mogli zobaczyć Cię na żywo.
-                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">Zaznacz, aby inni użytkownicy mogli zobaczyć Cię na żywo.</p>
                   </div>
                 </div>
 
@@ -1618,7 +1738,6 @@ export default function MapaMobilePage() {
                         {tempRadius} metrów
                       </span>
                     </div>
-                    
                     <input 
                       type="range" 
                       min="10" 
@@ -1631,27 +1750,15 @@ export default function MapaMobilePage() {
                   </div>
                 )}
 
-                <button 
-                  onClick={saveUserSettings}
-                  disabled={isSavingSettings}
-                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg shadow-blue-600/30 transition-all active:scale-95"
-                >
+                <button onClick={saveUserSettings} disabled={isSavingSettings} className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg shadow-blue-600/30 transition-all active:scale-95">
                   {isSavingSettings ? 'Zapisywanie...' : 'Zapisz profil'}
                 </button>
               </div>
             ) : (
               <div className="animate-in fade-in duration-200 flex flex-col gap-4 max-h-[60vh] overflow-y-auto">
                 <form onSubmit={sendFriendRequest} className="flex gap-2">
-                  <input
-                    type="text"
-                    value={friendInputNick}
-                    onChange={(e) => setFriendInputNick(e.target.value)}
-                    placeholder="Wpisz nick znajomego..."
-                    className="flex-1 p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-xs outline-none focus:border-blue-500"
-                  />
-                  <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 rounded-xl text-xs">
-                    Dodaj
-                  </button>
+                  <input type="text" value={friendInputNick} onChange={(e) => setFriendInputNick(e.target.value)} placeholder="Wpisz nick..." className="flex-1 p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-xs outline-none focus:border-blue-500" />
+                  <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 rounded-xl text-xs">Dodaj</button>
                 </form>
 
                 {pendingRequests.length > 0 && (
@@ -1684,9 +1791,7 @@ export default function MapaMobilePage() {
                 )}
 
                 <div>
-                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                    Twoi znajomi ({friendsList.length})
-                  </p>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Twoi znajomi ({friendsList.length})</p>
                   {friendsList.length > 0 ? (
                     <div className="flex flex-col gap-2">
                       {friendsList.map((friendNick, idx) => (
@@ -1709,7 +1814,6 @@ export default function MapaMobilePage() {
                 </div>
               </div>
             )}
-
           </div>
         </div>
       )}
