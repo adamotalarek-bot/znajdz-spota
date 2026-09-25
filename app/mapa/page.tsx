@@ -60,6 +60,17 @@ interface ChatMessage {
   created_at: string;
 }
 
+// NOWY TYP: dane dla modala profilu (własny lub cudzy)
+interface ProfileModalUser {
+  nick: string;
+  avatar: string | null;
+  isSelf: boolean;
+  isFriend: boolean;
+  isVip: boolean;
+  nowPlaying?: string | null;
+  distance?: number | null;
+}
+
 const AVAILABLE_VIBES = [
   "Na piwko 🍺",
   "Na papiersoka 🚬",
@@ -109,6 +120,9 @@ export default function MapaMobilePage() {
   const [reviewSpot, setReviewSpot] = useState<Spot | null>(null);   
   const [creatingEventSpot, setCreatingEventSpot] = useState<Spot | null>(null);
   const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
+
+  // NOWY STAN: modal profilu (własnego lub cudzego)
+  const [profileModalUser, setProfileModalUser] = useState<ProfileModalUser | null>(null);
   
   const [spotName, setSpotName] = useState('');
   const [selectedVibes, setSelectedVibes] = useState<string[]>([]);
@@ -373,6 +387,24 @@ export default function MapaMobilePage() {
     }
   }, [userLocation, shareLocation, userNick, userAvatar, visibilityRadius, currentSong, hasVipFrame]);
 
+  // Aktualizuj otwarty modal profilu na żywo, gdy zmieni się np. słuchana piosenka
+  useEffect(() => {
+    if (!profileModalUser) return;
+    if (profileModalUser.isSelf) {
+      setProfileModalUser((prev) =>
+        prev ? { ...prev, avatar: userAvatar, isVip: hasVipFrame, nowPlaying: currentSong } : prev
+      );
+    } else {
+      const updatedLive = liveUsers.find((u) => u.nick === profileModalUser.nick);
+      if (updatedLive) {
+        setProfileModalUser((prev) =>
+          prev ? { ...prev, nowPlaying: updatedLive.nowPlaying, avatar: updatedLive.avatar, isVip: !!updatedLive.hasVipFrame } : prev
+        );
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSong, hasVipFrame, userAvatar, liveUsers]);
+
   // FUNKCJE SKLEPU I PROFILU
   const fetchUserProfile = async (nick: string) => {
     const { data } = await supabase
@@ -479,11 +511,15 @@ export default function MapaMobilePage() {
     await supabase.from('messages').insert([msg]);
   };
 
-  const sendFriendRequest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const target = friendInputNick.trim();
-    if (!target) return;
-    if (target === userNick) {
+  // WSPÓLNA LOGIKA WYSYŁANIA ZAPROSZENIA (używana w formularzu i w Modalu Profilu)
+  const sendFriendRequestTo = async (target: string) => {
+    const cleanTarget = target.trim();
+    if (!cleanTarget) return;
+    if (userNick === 'Anonim') {
+      alert("Najpierw ustaw swój nick w ustawieniach (⚙️)!");
+      return;
+    }
+    if (cleanTarget === userNick) {
       alert("Nie możesz dodać samego siebie do znajomych!");
       return;
     }
@@ -491,7 +527,7 @@ export default function MapaMobilePage() {
     const { data: existing } = await supabase
       .from('friendships')
       .select('*')
-      .or(`and(sender_nick.eq.${userNick},receiver_nick.eq.${target}),and(sender_nick.eq.${target},receiver_nick.eq.${userNick})`);
+      .or(`and(sender_nick.eq.${userNick},receiver_nick.eq.${cleanTarget}),and(sender_nick.eq.${cleanTarget},receiver_nick.eq.${userNick})`);
 
     if (existing && existing.length > 0) {
       alert("Zaproszenie do tego użytkownika już istnieje lub jesteście już znajomymi!");
@@ -499,7 +535,7 @@ export default function MapaMobilePage() {
     }
 
     const { error } = await supabase.from('friendships').insert([
-      { sender_nick: userNick, receiver_nick: target, status: 'pending' }
+      { sender_nick: userNick, receiver_nick: cleanTarget, status: 'pending' }
     ]);
 
     if (error) {
@@ -507,9 +543,16 @@ export default function MapaMobilePage() {
       return;
     }
 
-    alert(`Wysłano zaproszenie do @${target}!`);
-    setFriendInputNick('');
+    alert(`Wysłano zaproszenie do @${cleanTarget}!`);
     fetchFriendships(userNick);
+  };
+
+  const sendFriendRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const target = friendInputNick.trim();
+    if (!target) return;
+    await sendFriendRequestTo(target);
+    setFriendInputNick('');
   };
 
   const acceptFriendRequest = async (friendshipId: number) => {
@@ -532,6 +575,15 @@ export default function MapaMobilePage() {
     if (!error) {
       fetchFriendships(userNick);
     }
+  };
+
+  // Otwiera czat z danym znajomym (np. z poziomu Modalu Profilu)
+  const openChatWithFriend = (nick: string) => {
+    setProfileModalUser(null);
+    closeAllPanels();
+    setIsSettingsOpen(false);
+    setIsChatOpen(true);
+    setActiveChatFriend(nick);
   };
 
   useEffect(() => {
@@ -578,6 +630,7 @@ export default function MapaMobilePage() {
     setPreviewSpot(null);
     setCreatingEventSpot(null);
     setActiveEvent(null);
+    setProfileModalUser(null);
   };
 
   const handleMapClick = ({ latLng }: { latLng: [number, number] }) => {
@@ -920,15 +973,38 @@ export default function MapaMobilePage() {
                     className="relative flex items-center justify-center w-7 h-7 pointer-events-auto group cursor-pointer"
                     onClick={(e) => {
                       e.stopPropagation();
-                      alert(`Użytkownik @${liveUser.nick} jest ok. ${Math.round(distance)} metrów od Ciebie! ${isFriend ? '⭐ (Mój znajomy)' : ''} ${liveUser.nowPlaying ? `\n🎵 Słucha: ${liveUser.nowPlaying}` : ''}`);
+                      setProfileModalUser({
+                        nick: liveUser.nick,
+                        avatar: liveUser.avatar,
+                        isSelf: false,
+                        isFriend,
+                        isVip: !!isVip,
+                        nowPlaying: liveUser.nowPlaying,
+                        distance,
+                      });
                     }}
                   >
                     <div className={`absolute w-full h-full rounded-full animate-ping opacity-50 ${isFriend ? 'bg-amber-400' : 'bg-emerald-500'}`}></div>
                     
                     {liveUser.nowPlaying && (
-                      <div className="absolute -top-7 bg-emerald-900/90 border border-emerald-500 text-emerald-300 text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-md pointer-events-none flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setProfileModalUser({
+                            nick: liveUser.nick,
+                            avatar: liveUser.avatar,
+                            isSelf: false,
+                            isFriend,
+                            isVip: !!isVip,
+                            nowPlaying: liveUser.nowPlaying,
+                            distance,
+                          });
+                        }}
+                        className="absolute -top-7 bg-emerald-900/90 border border-emerald-500 text-emerald-300 text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-md pointer-events-auto flex items-center gap-1 animate-pulse cursor-pointer active:scale-95 transition-transform"
+                      >
                         <span>🎵</span> {liveUser.nowPlaying}
-                      </div>
+                      </button>
                     )}
 
                     {liveUser.avatar ? (
@@ -949,13 +1025,49 @@ export default function MapaMobilePage() {
 
             {userLocation && (
               <Overlay anchor={userLocation} offset={userAvatar ? [16, 16] : [12, 12]}>
-                <div className={`relative flex items-center justify-center pointer-events-none ${userAvatar ? 'w-8 h-8' : 'w-6 h-6'}`}>
+                <div
+                  className={`relative flex items-center justify-center pointer-events-auto cursor-pointer ${userAvatar ? 'w-8 h-8' : 'w-6 h-6'}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setProfileModalUser({
+                      nick: userNick,
+                      avatar: userAvatar,
+                      isSelf: true,
+                      isFriend: false,
+                      isVip: hasVipFrame,
+                      nowPlaying: currentSong,
+                      distance: null,
+                    });
+                  }}
+                >
                   {shareLocation && (
-                    <div className="absolute w-full h-full bg-emerald-500 rounded-full animate-ping opacity-60"></div>
+                    <div className="absolute w-full h-full bg-emerald-500 rounded-full animate-ping opacity-60 pointer-events-none"></div>
                   )}
                   {!shareLocation && (
-                    <div className="absolute w-full h-full bg-blue-500 rounded-full animate-ping opacity-60"></div>
+                    <div className="absolute w-full h-full bg-blue-500 rounded-full animate-ping opacity-60 pointer-events-none"></div>
                   )}
+
+                  {currentSong && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProfileModalUser({
+                          nick: userNick,
+                          avatar: userAvatar,
+                          isSelf: true,
+                          isFriend: false,
+                          isVip: hasVipFrame,
+                          nowPlaying: currentSong,
+                          distance: null,
+                        });
+                      }}
+                      className="absolute -top-7 bg-emerald-900/90 border border-emerald-500 text-emerald-300 text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-md flex items-center gap-1 animate-pulse cursor-pointer active:scale-95 transition-transform"
+                    >
+                      <span>🎵</span> {currentSong}
+                    </button>
+                  )}
+
                   {userAvatar ? (
                     <img 
                       src={userAvatar} 
@@ -1587,6 +1699,130 @@ export default function MapaMobilePage() {
         </div>
       )}
 
+      {/* NOWY MODAL PROFILU (własny i cudzy) */}
+      {profileModalUser && (
+        <div
+          className="fixed inset-0 z-[65] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setProfileModalUser(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[28px] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-end mb-1">
+              <button
+                onClick={() => setProfileModalUser(null)}
+                className="bg-slate-800 border border-slate-700 w-8 h-8 rounded-full text-slate-400 hover:text-white flex items-center justify-center"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex flex-col items-center text-center mb-5">
+              <div
+                className={`relative w-24 h-24 mb-3 rounded-full border-[3px] bg-slate-800 flex items-center justify-center overflow-hidden ${
+                  profileModalUser.isVip
+                    ? 'border-yellow-400 shadow-[0_0_25px_rgba(250,204,21,0.7)]'
+                    : profileModalUser.isFriend
+                    ? 'border-amber-400'
+                    : 'border-emerald-400'
+                }`}
+              >
+                {profileModalUser.avatar ? (
+                  <img src={profileModalUser.avatar} alt={profileModalUser.nick} className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-3xl font-black text-white">
+                    {profileModalUser.nick.substring(0, 2).toUpperCase()}
+                  </span>
+                )}
+              </div>
+              <h2 className={`text-xl font-black flex items-center gap-1.5 ${profileModalUser.isVip ? 'text-yellow-400' : 'text-white'}`}>
+                @{profileModalUser.nick}
+                {profileModalUser.isVip && <span>⭐</span>}
+              </h2>
+              <div className="flex flex-wrap justify-center gap-1.5 mt-2">
+                {profileModalUser.isSelf && (
+                  <span className="text-[10px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full">
+                    To Ty
+                  </span>
+                )}
+                {!profileModalUser.isSelf && profileModalUser.isFriend && (
+                  <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-full">
+                    ⭐ Znajomy
+                  </span>
+                )}
+                {typeof profileModalUser.distance === 'number' && (
+                  <span className="text-[10px] font-bold text-slate-300 bg-slate-800 border border-slate-700 px-2.5 py-1 rounded-full">
+                    📍 {Math.round(profileModalUser.distance)} m od Ciebie
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="mb-5">
+              {profileModalUser.nowPlaying ? (
+                <div className="bg-emerald-900/30 border border-emerald-500/40 rounded-2xl p-4 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-lg animate-pulse shrink-0">
+                    🎵
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
+                      {profileModalUser.isSelf ? 'Teraz słuchasz' : 'Teraz słucha'}
+                    </p>
+                    <p className="text-sm font-bold text-white truncate">{profileModalUser.nowPlaying}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-slate-800/40 border border-slate-800 rounded-2xl p-4 text-center text-slate-500 text-xs">
+                  {profileModalUser.isSelf ? 'Nic teraz nie gra 🎧' : 'Nic teraz nie słucha muzyki'}
+                </div>
+              )}
+            </div>
+
+            {!profileModalUser.isSelf && (
+              <div className="flex flex-col gap-2.5">
+                {profileModalUser.isFriend ? (
+                  <button
+                    onClick={() => openChatWithFriend(profileModalUser.nick)}
+                    className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl text-sm shadow-lg shadow-blue-600/30 transition-all active:scale-95 flex items-center justify-center gap-2"
+                  >
+                    💬 Napisz
+                  </button>
+                ) : (
+                  <button
+                    onClick={async () => {
+                      await sendFriendRequestTo(profileModalUser.nick);
+                      setProfileModalUser(null);
+                    }}
+                    className="w-full bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold py-3.5 rounded-xl text-sm shadow-lg shadow-amber-500/30 transition-all active:scale-95 flex items-center justify-center gap-2"
+                  >
+                    ➕ Zaproś do znajomych
+                  </button>
+                )}
+              </div>
+            )}
+
+            {profileModalUser.isSelf && (
+              <button
+                onClick={() => {
+                  setProfileModalUser(null);
+                  setTempNick(userNick);
+                  setTempAvatarUrl(userAvatar);
+                  setTempShare(shareLocation);
+                  setTempRadius(visibilityRadius);
+                  setTempAvatarFile(null);
+                  setSettingsTab('profile');
+                  setIsSettingsOpen(true);
+                }}
+                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-3.5 rounded-xl text-sm border border-slate-700 transition-all active:scale-95"
+              >
+                ⚙️ Edytuj profil
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* MODAL USTAWIEN Z ZAKŁADKĄ SKLEPU */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1702,17 +1938,33 @@ export default function MapaMobilePage() {
                   <input type="text" value={tempNick} onChange={(e) => setTempNick(e.target.value)} placeholder="Podaj nowy nick..." className="w-full p-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white text-sm outline-none focus:border-blue-500 text-center" />
                 </div>
 
-                <div className="mb-4 bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-xl">🎧</span>
-                    <div>
-                      <p className="text-xs font-bold text-slate-200">Spotify</p>
-                      <p className="text-[10px] text-slate-400">{isSpotifyConnected ? 'Połączono ze Spotify ✓' : 'Pokazuj czego słuchasz'}</p>
+                {/* ODŚWIEŻONY WIDŻET SPOTIFY */}
+                <div className={`mb-4 p-4 rounded-2xl border flex flex-col gap-3 relative overflow-hidden ${isSpotifyConnected ? 'bg-gradient-to-br from-emerald-500/15 to-emerald-900/10 border-emerald-500/40' : 'bg-slate-950 border-slate-800'}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <span className={`text-xl ${isSpotifyConnected && currentSong ? 'animate-pulse' : ''}`}>🎧</span>
+                      <div>
+                        <p className="text-xs font-bold text-slate-200">Spotify</p>
+                        <p className="text-[10px] text-slate-400">{isSpotifyConnected ? 'Połączono ze Spotify ✓' : 'Pokazuj czego słuchasz'}</p>
+                      </div>
                     </div>
+                    <a 
+                      href={`/api/spotify/login?nick=${encodeURIComponent(userNick)}`} 
+                      className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all ${isSpotifyConnected ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
+                    >
+                      {isSpotifyConnected ? 'Połączono' : 'Połącz'}
+                    </a>
                   </div>
-                  <a href={`/api/spotify/login?nick=${encodeURIComponent(userNick)}`} className={`text-xs font-bold px-3.5 py-2 rounded-xl transition-all ${isSpotifyConnected ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}>
-                    {isSpotifyConnected ? 'Połączono' : 'Połącz'}
-                  </a>
+
+                  {isSpotifyConnected && (
+                    <div className="bg-slate-950/60 border border-emerald-500/20 rounded-xl px-3 py-2.5 flex items-center gap-2.5">
+                      <span className={`text-sm ${currentSong ? 'animate-pulse' : ''}`}>🎵</span>
+                      <div className="min-w-0">
+                        <p className="text-[9px] font-bold text-emerald-400 uppercase tracking-widest">Teraz gra</p>
+                        <p className="text-xs font-semibold text-white truncate">{currentSong || 'Nic teraz nie gra'}</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className={`bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-start gap-3 ${tempShare ? 'mb-3' : 'mb-4'}`}>
