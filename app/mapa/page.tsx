@@ -12,6 +12,7 @@ interface Spot {
   vibe: string[];
   images?: string[];
   reviews?: { rating: number }[];
+  burning_until?: string | null;
 }
 
 interface Review {
@@ -31,6 +32,7 @@ interface EventItem {
   creator_nick: string;
   participants: string[];
   created_at: string;
+  extended_minutes?: number;
 }
 
 interface LiveUser {
@@ -69,6 +71,14 @@ interface ProfileModalUser {
   isVip: boolean;
   nowPlaying?: string | null;
   distance?: number | null;
+}
+
+// TYPY DLA SYSTEMU REKLAM NAGRADZANYCH (różne rodzaje nagród za jedną reklamę)
+type AdRewardType = 'coins' | 'super_radar' | 'event_boost' | 'gallery_unlock' | 'post_spot_bonus';
+
+interface PendingAdReward {
+  type: AdRewardType;
+  eventId?: number;
 }
 
 const AVAILABLE_VIBES = [
